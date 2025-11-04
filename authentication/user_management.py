@@ -12,16 +12,16 @@ def create_user_with_role(request):
     Endpoint para que el administrador cree usuarios y les asigne roles
     Solo accesible por administradores
     """
-    # Verificar que el usuario sea administrador
-    if not hasattr(request, 'firebase_user_role') or request.firebase_user_role != 'admin':
+    # Verificar que el usuario sea superadministrador
+    if not hasattr(request, 'firebase_user_role') or request.firebase_user_role != 'superadmin':
         return Response({
-            'error': 'Acceso denegado. Se requiere rol de administrador.'
+            'error': 'Acceso denegado. Se requiere rol de superadministrador.'
         }, status=status.HTTP_403_FORBIDDEN)
     
     try:
         email = request.data.get('email')
         password = request.data.get('password')
-        role = request.data.get('role')  # 'receptionist' o 'housekeeping'
+        role = request.data.get('role')  # 'admin' o 'receptionist'
         display_name = request.data.get('display_name', '')
         
         # Validar datos
@@ -30,9 +30,9 @@ def create_user_with_role(request):
                 'error': 'Email, password y role son requeridos'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        if role not in ['receptionist', 'housekeeping']:
+        if role not in ['admin', 'receptionist']:
             return Response({
-                'error': 'Role debe ser "receptionist" o "housekeeping"'
+                'error': 'Role debe ser "admin" o "receptionist"'
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Crear usuario en Firebase
@@ -67,7 +67,7 @@ def list_users(request):
     """
     Listar todos los usuarios (solo administradores)
     """
-    if not hasattr(request, 'firebase_user_role') or request.firebase_user_role != 'admin':
+    if not hasattr(request, 'firebase_user_role') or request.firebase_user_role not in ['admin', 'superadmin']:
         return Response({
             'error': 'Acceso denegado. Se requiere rol de administrador.'
         }, status=status.HTTP_403_FORBIDDEN)
@@ -105,17 +105,17 @@ def update_user_role(request, uid):
     """
     Cambiar el rol de un usuario existente
     """
-    if not hasattr(request, 'firebase_user_role') or request.firebase_user_role != 'admin':
+    if not hasattr(request, 'firebase_user_role') or request.firebase_user_role != 'superadmin':
         return Response({
-            'error': 'Acceso denegado. Se requiere rol de administrador.'
+            'error': 'Acceso denegado. Se requiere rol de superadministrador.'
         }, status=status.HTTP_403_FORBIDDEN)
     
     try:
         new_role = request.data.get('role')
         
-        if new_role not in ['admin', 'receptionist', 'housekeeping']:
+        if new_role not in ['superadmin', 'admin', 'receptionist']:
             return Response({
-                'error': 'Role debe ser "admin", "receptionist" o "housekeeping"'
+                'error': 'Role debe ser "superadmin", "admin" o "receptionist"'
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Actualizar custom claims
@@ -141,9 +141,9 @@ def delete_user(request, uid):
     """
     Eliminar un usuario
     """
-    if not hasattr(request, 'firebase_user_role') or request.firebase_user_role != 'admin':
+    if not hasattr(request, 'firebase_user_role') or request.firebase_user_role != 'superadmin':
         return Response({
-            'error': 'Acceso denegado. Se requiere rol de administrador.'
+            'error': 'Acceso denegado. Se requiere rol de superadministrador.'
         }, status=status.HTTP_403_FORBIDDEN)
     
     try:
