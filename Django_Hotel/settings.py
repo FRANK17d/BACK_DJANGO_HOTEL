@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'corsheaders',
     'authentication',
+    'messaging',
 ]
 
 MIDDLEWARE = [
@@ -108,6 +109,8 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+ 
+
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
@@ -133,11 +136,18 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # CORS settings
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000", 
-    "http://localhost:5173",  
+    "http://localhost:3000",   
 ]
 
 CORS_ALLOW_CREDENTIALS = True
+
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_HOST_USER = 'frank.castro.g@tecsup.edu.pe'
+EMAIL_HOST_PASSWORD = 'ygpiunjmdxjpbgmm'
+EMAIL_USE_TLS = True
+DEFAULT_FROM_EMAIL = EMAIL_HOST_USER or 'no-reply@hotelplazatrujillo.local'
 
 # Firebase Admin SDK
 import firebase_admin
