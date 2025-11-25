@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'authentication',
     'messaging',
+    'reservations',
 ]
 
 MIDDLEWARE = [
@@ -148,6 +149,7 @@ EMAIL_HOST_USER = 'frank.castro.g@tecsup.edu.pe'
 EMAIL_HOST_PASSWORD = 'ygpiunjmdxjpbgmm'
 EMAIL_USE_TLS = True
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER or 'no-reply@hotelplazatrujillo.local'
+LOOKUP_API_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIzOTc3OSIsImh0dHA6Ly9zY2hlbWFzLm1pY3Jvc29mdC5jb20vd3MvMjAwOC8wNi9pZGVudGl0eS9jbGFpbXMvcm9sZSI6ImNvbnN1bHRvciJ9.V1QFk9W-njWmWfHlr5sl7_xF4H0IcxXMN6ZNRHOe6QA'
 
 # Firebase Admin SDK
 import firebase_admin

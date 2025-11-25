@@ -10,6 +10,7 @@
 
 # Archivos de configuración local / secrets
 secrets.json
+factiliza.json
 *.key
 *.pem
 *.crt
