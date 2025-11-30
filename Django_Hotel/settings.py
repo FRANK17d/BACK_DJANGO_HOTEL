@@ -164,6 +164,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'  # Agregar esta línea
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -187,27 +188,38 @@ GEMINI_API_KEY = config('GEMINI_API_KEY', default='dummy-key')
 # Ruta al archivo de service account key
 FIREBASE_CREDENTIALS_JSON = config('FIREBASE_CREDENTIALS_JSON', default=None)
 
-if FIREBASE_CREDENTIALS_JSON:
-    try:
-        cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
-        cred = credentials.Certificate(cred_dict)
-        firebase_admin.initialize_app(cred)
-    except (json.JSONDecodeError, ValueError) as e:
-        print(f"Error parseando credenciales de Firebase: {e}")
-        # Intentar con archivo como fallback
-        SERVICE_ACCOUNT_KEY_PATH = os.path.join(BASE_DIR, 'serviceAccountKey.json')
-        if os.path.exists(SERVICE_ACCOUNT_KEY_PATH):
-            cred = credentials.Certificate(SERVICE_ACCOUNT_KEY_PATH)
+# Inicializar Firebase solo si las credenciales están disponibles
+# Durante el build, esto puede fallar, así que lo hacemos opcional
+try:
+    if FIREBASE_CREDENTIALS_JSON:
+        try:
+            # Intentar parsear el JSON
+            cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
+            cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred)
-        else:
-            print("Firebase no se pudo inicializar: credenciales no disponibles")
-elif os.path.exists(os.path.join(BASE_DIR, 'serviceAccountKey.json')):
-    # Fallback para desarrollo local
-    SERVICE_ACCOUNT_KEY_PATH = os.path.join(BASE_DIR, 'serviceAccountKey.json')
-    cred = credentials.Certificate(SERVICE_ACCOUNT_KEY_PATH)
-    firebase_admin.initialize_app(cred)
-else:
-    print("Firebase no se inicializará: credenciales no encontradas")
+            print("Firebase inicializado correctamente desde variable de entorno")
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"Error parseando credenciales de Firebase: {e}")
+            # Intentar con archivo como fallback
+            SERVICE_ACCOUNT_KEY_PATH = os.path.join(BASE_DIR, 'serviceAccountKey.json')
+            if os.path.exists(SERVICE_ACCOUNT_KEY_PATH):
+                cred = credentials.Certificate(SERVICE_ACCOUNT_KEY_PATH)
+                firebase_admin.initialize_app(cred)
+                print("Firebase inicializado desde archivo serviceAccountKey.json")
+            else:
+                print("Firebase no se pudo inicializar: credenciales no disponibles")
+    elif os.path.exists(os.path.join(BASE_DIR, 'serviceAccountKey.json')):
+        # Fallback para desarrollo local
+        SERVICE_ACCOUNT_KEY_PATH = os.path.join(BASE_DIR, 'serviceAccountKey.json')
+        cred = credentials.Certificate(SERVICE_ACCOUNT_KEY_PATH)
+        firebase_admin.initialize_app(cred)
+        print("Firebase inicializado desde archivo local")
+    else:
+        print("Firebase no se inicializará: credenciales no encontradas (esto es normal durante el build)")
+except Exception as e:
+    # Si Firebase falla durante el build, no detener el proceso
+    print(f"Advertencia: Firebase no se pudo inicializar: {e}")
+    print("La aplicación continuará sin Firebase (esto puede ser normal durante el build)")
 
 # Channels configuration
 ASGI_APPLICATION = 'Django_Hotel.asgi.application'
