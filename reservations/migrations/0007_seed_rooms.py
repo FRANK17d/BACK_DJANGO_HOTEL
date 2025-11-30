@@ -1,7 +1,25 @@
-from django.db import migrations
+from django.db import migrations, connection
 
 
 def seed_rooms(apps, schema_editor):
+    # Primero, asegurarse de que la columna 'type' existe
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT COUNT(*) 
+            FROM information_schema.COLUMNS 
+            WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'rooms'
+            AND COLUMN_NAME = 'type'
+        """)
+        type_column_exists = cursor.fetchone()[0] > 0
+        
+        if not type_column_exists:
+            # Agregar la columna type si no existe
+            cursor.execute("""
+                ALTER TABLE rooms 
+                ADD COLUMN type VARCHAR(10) NULL
+            """)
+    
     Room = apps.get_model('reservations', 'Room')
     data = {
         1: [

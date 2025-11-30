@@ -14,6 +14,8 @@ class UserProfile(models.Model):
     entry_date = models.DateField(blank=True, null=True)
     attendance = models.CharField(max_length=50, blank=True, null=True)
     profile_photo_url = models.TextField(blank=True, null=True)  # Base64 o URL de la foto de perfil
+    email_verified = models.BooleanField(default=False)  # Indica si el correo está verificado
+    email_verification_token = models.CharField(max_length=255, blank=True, null=True)  # Token para verificar el correo
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     

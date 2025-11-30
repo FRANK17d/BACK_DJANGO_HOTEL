@@ -10,12 +10,51 @@ import json
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 from django.conf import settings
+from django.db.models import Sum
 
 
 @api_view(['GET'])
 def list_reservations(request):
     if not hasattr(request, 'firebase_user'):
         return Response({'error': 'Usuario no autenticado'}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    # Sincronizar estados de reservas y habitaciones antes de devolverlas
+    from django.utils import timezone
+    from mantenimiento.models import BlockedRoom
+    
+    # Sincronizar estados de reservas
+    active_reservations = Reservation.objects.exclude(status='Cancelada')
+    for res in active_reservations:
+        # Importar función de sincronización del dashboard
+        from dashboard.views import sync_reservation_status
+        sync_reservation_status(res)
+    
+    # Sincronizar estados de habitaciones
+    today = timezone.localtime().date()
+    blocked_rooms = set()
+    for br in BlockedRoom.objects.filter(blocked_until__gte=today):
+        blocked_rooms.add(str(br.room).strip())
+    
+    occupied_rooms = set()
+    checkin_reservations = Reservation.objects.filter(status='Check-in')
+    for res in checkin_reservations:
+        if res.room_label:
+            occupied_rooms.add(str(res.room_label).strip())
+        for ar in res.assigned_rooms.all():
+            occupied_rooms.add(str(ar.room_code).strip())
+    
+    for room in Room.objects.all():
+        room_code = str(room.code).strip()
+        if room_code in blocked_rooms:
+            new_status = 'Bloqueada'
+        elif room_code in occupied_rooms:
+            new_status = 'Ocupada'
+        else:
+            new_status = 'Disponible'
+        if room.status != new_status:
+            room.status = new_status
+            room.save(update_fields=['status'])
+    
     qs = Reservation.objects.all()
     data = ReservationSerializer(qs, many=True).data
     return Response({'reservations': data})
@@ -37,6 +76,7 @@ def create_reservation(request):
     document_type = payload.get('documentType')
     document_number = payload.get('documentNumber')
     arrival_time = parse_time(payload.get('arrivalTime')) if payload.get('arrivalTime') else None
+    departure_time = parse_time(payload.get('departureTime')) if payload.get('departureTime') else None
     num_people = int(payload.get('numPeople') or 1)
     num_adults = int(payload.get('numAdults') or num_people)
     num_children = int(payload.get('numChildren') or 0)
@@ -67,6 +107,7 @@ def create_reservation(request):
         document_type=document_type,
         document_number=document_number,
         arrival_time=arrival_time,
+        departure_time=departure_time,
         num_people=num_people,
         num_adults=num_adults,
         num_children=num_children,
@@ -147,6 +188,26 @@ def reservation_detail(request, reservation_id):
             obj.check_out = parse_date(payload.get('checkOut'))
         if payload.get('arrivalTime') is not None:
             obj.arrival_time = parse_time(payload.get('arrivalTime'))
+        if payload.get('departureTime') is not None:
+            departure_time_val = payload.get('departureTime')
+            print(f"DEBUG: Recibido departureTime: {departure_time_val}, tipo: {type(departure_time_val)}")
+            if departure_time_val and str(departure_time_val).strip():
+                parsed_time = parse_time(str(departure_time_val))
+                print(f"DEBUG: departureTime parseado: {parsed_time}")
+                obj.departure_time = parsed_time
+            else:
+                print("DEBUG: departureTime vacío, estableciendo None")
+                obj.departure_time = None
+        elif payload.get('departure_time') is not None:
+            departure_time_val = payload.get('departure_time')
+            print(f"DEBUG: Recibido departure_time: {departure_time_val}, tipo: {type(departure_time_val)}")
+            if departure_time_val and str(departure_time_val).strip():
+                parsed_time = parse_time(str(departure_time_val))
+                print(f"DEBUG: departure_time parseado: {parsed_time}")
+                obj.departure_time = parsed_time
+            else:
+                print("DEBUG: departure_time vacío, estableciendo None")
+                obj.departure_time = None
         if payload.get('paid') is not None:
             obj.paid = bool(payload.get('paid'))
         if payload.get('roomType') is not None:
@@ -228,19 +289,112 @@ def available_rooms(request):
     check_out = parse_date(co)
     if not check_in or not check_out:
         return Response({'error': 'Fechas inválidas'}, status=status.HTTP_400_BAD_REQUEST)
+    
     occupied = set()
     for r in Reservation.objects.all():
         if not r.check_in or not r.check_out:
             continue
+        # Excluir reservas canceladas
+        if (r.status or '').lower() == 'cancelada':
+            continue
         if r.check_in < check_out and r.check_out > check_in:
             if r.room_label:
-                occupied.add(r.room_label)
+                occupied.add(str(r.room_label).strip())
             for ar in r.assigned_rooms.all():
-                occupied.add(ar.room_code)
+                occupied.add(str(ar.room_code).strip())
+    
+    # Obtener habitaciones bloqueadas durante el rango de fechas
+    from django.utils import timezone
+    from mantenimiento.models import BlockedRoom
+    blocked = set()
+    # Verificar habitaciones bloqueadas que se solapan con el rango de fechas
+    # Una habitación está bloqueada si blocked_until >= check_in (aún está bloqueada cuando comienza la reserva)
+    for br in BlockedRoom.objects.filter(blocked_until__gte=check_in):
+        blocked.add(str(br.room).strip())
+    
     items = []
-    for rm in Room.objects.all():
-        if rm.code not in occupied:
+    all_rooms = Room.objects.all()
+    total_rooms_count = all_rooms.count()
+    
+    # Debug: convertir todos los códigos a strings para comparación consistente
+    occupied_str = {str(code).strip() for code in occupied}
+    blocked_str = {str(code).strip() for code in blocked}
+    
+    for rm in all_rooms:
+        room_code_str = str(rm.code).strip()
+        if room_code_str not in occupied_str and room_code_str not in blocked_str:
             items.append({'code': rm.code, 'floor': rm.floor, 'type': rm.type})
+    
+    # Si no hay habitaciones en total, puede ser que la migración no se ejecutó
+    if total_rooms_count == 0:
+        return Response({
+            'rooms': [],
+            'debug': {
+                'total_rooms': 0,
+                'message': 'No hay habitaciones en la base de datos. Ejecuta la migración 0007_seed_rooms.'
+            }
+        })
+    
+    return Response({
+        'rooms': items,
+        'debug': {
+            'total_rooms': total_rooms_count,
+            'available': len(items),
+            'occupied': list(occupied_str),
+            'blocked': list(blocked_str)
+        } if request.GET.get('debug') == 'true' else None
+    })
+
+@api_view(['GET'])
+def all_rooms(request):
+    """Obtiene todas las habitaciones para usar en selects"""
+    if not hasattr(request, 'firebase_user'):
+        return Response({'error': 'Usuario no autenticado'}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    # Sincronizar estados de habitaciones antes de devolverlas
+    from django.utils import timezone
+    from mantenimiento.models import BlockedRoom
+    
+    today = timezone.localtime().date()
+    
+    # Obtener habitaciones bloqueadas actualmente
+    blocked_rooms = set()
+    for br in BlockedRoom.objects.filter(blocked_until__gte=today):
+        blocked_rooms.add(str(br.room).strip())
+    
+    # Obtener habitaciones ocupadas (reservas con estado Check-in)
+    occupied_rooms = set()
+    checkin_reservations = Reservation.objects.filter(status='Check-in')
+    for res in checkin_reservations:
+        if res.room_label:
+            occupied_rooms.add(str(res.room_label).strip())
+        for ar in res.assigned_rooms.all():
+            occupied_rooms.add(str(ar.room_code).strip())
+    
+    # Actualizar estado de cada habitación
+    for room in Room.objects.all():
+        room_code = str(room.code).strip()
+        
+        if room_code in blocked_rooms:
+            new_status = 'Bloqueada'
+        elif room_code in occupied_rooms:
+            new_status = 'Ocupada'
+        else:
+            new_status = 'Disponible'
+        
+        if room.status != new_status:
+            room.status = new_status
+            room.save(update_fields=['status'])
+    
+    # Devolver habitaciones con su estado actualizado
+    items = []
+    for rm in Room.objects.all().order_by('floor', 'code'):
+        items.append({
+            'code': rm.code, 
+            'floor': rm.floor, 
+            'type': rm.type,
+            'status': rm.status
+        })
     return Response({'rooms': items})
 
 @api_view(['GET'])
@@ -296,3 +450,58 @@ def lookup_document(request):
             ((data.get('nombres') or '') + ' ' + (data.get('apellido_paterno') or '') + ' ' + (data.get('apellido_materno') or '')).strip()
         )
     return Response({'name': name, 'raw': payload})
+
+
+@api_view(['GET'])
+def paid_clients(request):
+    if not hasattr(request, 'firebase_user'):
+        return Response({'error': 'Usuario no autenticado'}, status=status.HTTP_401_UNAUTHORIZED)
+    qs = Reservation.objects.filter(paid=True)
+    grouped = qs.values('guest_name').annotate(total=Sum('total_amount')).order_by('guest_name')
+    clients = [{'guest': g['guest_name'] or '—', 'total': float(g['total'] or 0)} for g in grouped]
+    total = float(qs.aggregate(total=Sum('total_amount'))['total'] or 0)
+    return Response({'clients': clients, 'total': total})
+
+@api_view(['GET'])
+def guest_latest(request):
+    if not hasattr(request, 'firebase_user'):
+        return Response({'error': 'Usuario no autenticado'}, status=status.HTTP_401_UNAUTHORIZED)
+    guest = (request.GET.get('guest') or '').strip()
+    if not guest:
+        return Response({'error': 'Parámetro guest requerido'}, status=status.HTTP_400_BAD_REQUEST)
+    obj = Reservation.objects.filter(guest_name__iexact=guest).order_by('-updated_at', '-created_at').first()
+    if not obj:
+        obj = Reservation.objects.filter(guest_name__icontains=guest).order_by('-updated_at', '-created_at').first()
+    if not obj:
+        return Response({'error': 'Reserva no encontrada para el huésped'}, status=status.HTTP_404_NOT_FOUND)
+    return Response({
+        'guest': guest,
+        'reservation_id': obj.reservation_id,
+        'paid': bool(obj.paid),
+        'total_amount': float(obj.total_amount or 0),
+        'dni': obj.document_number or '',
+        'direccion': obj.address or ''
+    })
+
+@api_view(['GET'])
+def paid_clients_details(request):
+    if not hasattr(request, 'firebase_user'):
+        return Response({'error': 'Usuario no autenticado'}, status=status.HTTP_401_UNAUTHORIZED)
+    qs = Reservation.objects.filter(paid=True)
+    # Agrupar por huésped con totales y tomar la última reserva para DNI/Dirección
+    latest = {}
+    totals = {}
+    for r in qs.order_by('updated_at'):
+        key = r.guest_name or '—'
+        latest[key] = r
+        totals[key] = float(totals.get(key, 0)) + float(r.total_amount or 0)
+    clients = []
+    for guest, res in latest.items():
+        clients.append({
+            'guest': guest,
+            'total': float(totals.get(guest, 0)),
+            'dni': res.document_number or '',
+            'direccion': res.address or ''
+        })
+    total = float(qs.aggregate(total=Sum('total_amount'))['total'] or 0)
+    return Response({'clients': clients, 'total': total})

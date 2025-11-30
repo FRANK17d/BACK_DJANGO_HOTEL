@@ -4,6 +4,8 @@ from rest_framework import status
 from django.db.models import Q, Max, Count, Case, When, F
 from .models import Conversation, Message
 from authentication.models import UserProfile
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
 
 @api_view(['GET'])
 def list_conversations(request):
@@ -174,18 +176,36 @@ def send_message(request, other_user_uid):
         # Actualizar timestamp de la conversación
         conversation.save()  # Esto actualiza el updated_at
         
+        # Datos del mensaje
+        message_data = {
+            'id': message.id,
+            'sender_uid': message.sender.firebase_uid,
+            'text': message.text,
+            'message_type': message.message_type,
+            'attachment': message.attachment,
+            'attachment_name': message.attachment_name,
+            'attachment_size': message.attachment_size,
+            'is_read': message.is_read,
+            'timestamp': message.created_at.isoformat()
+        }
+        
+        # Notificar al destinatario via WebSocket
+        try:
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                'presence',
+                {
+                    'type': 'new_message',
+                    'target_uid': other_user_uid,
+                    'sender_uid': uid,
+                    'message': message_data,
+                }
+            )
+        except Exception:
+            pass  # Si falla WebSocket, continuar normalmente
+        
         return Response({
-            'message': {
-                'id': message.id,
-                'sender_uid': message.sender.firebase_uid,
-                'text': message.text,
-                'message_type': message.message_type,
-                'attachment': message.attachment,
-                'attachment_name': message.attachment_name,
-                'attachment_size': message.attachment_size,
-                'is_read': message.is_read,
-                'timestamp': message.created_at.isoformat()
-            }
+            'message': message_data
         }, status=status.HTTP_201_CREATED)
         
     except UserProfile.DoesNotExist:

@@ -14,6 +14,7 @@ class Reservation(models.Model):
     document_type = models.CharField(max_length=10, blank=True, null=True)
     document_number = models.CharField(max_length=20, blank=True, null=True)
     arrival_time = models.TimeField(blank=True, null=True)
+    departure_time = models.TimeField(blank=True, null=True)
     num_people = models.IntegerField(default=1)
     num_adults = models.IntegerField(default=1)
     num_children = models.IntegerField(default=0)

@@ -11,7 +11,13 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 import os
+import json
 from pathlib import Path
+from decouple import config
+import firebase_admin
+from firebase_admin import credentials
+import pymysql
+pymysql.install_as_MySQLdb()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -21,13 +27,17 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-)o1bxy7@zqxz&bdcovvv#%tw13kh*q=5n8zyla8khodd-1j8sr'
+SECRET_KEY = config('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config('DEBUG', cast=bool)
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+ALLOWED_HOSTS = [ '*' ]
 
+# CORS settings
+CORS_ALLOWED_ORIGINS = [ '*' ]
+
+CORS_ALLOW_CREDENTIALS = True
 
 # Application definition
 
@@ -40,15 +50,23 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'corsheaders',
+    'channels',
     'authentication',
     'messaging',
     'reservations',
+    'cajacobros',
+    'lavanderia',
+    'mantenimiento',
+    'dashboard',
+    'chatbot',
+    'presence',
 ]
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware', 
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -80,16 +98,34 @@ WSGI_APPLICATION = 'Django_Hotel.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'hotel_plaza_trujillo',
-        'USER': 'root',  
-        'PASSWORD': '', 
-        'HOST': 'localhost',
-        'PORT': '3306',
+# Intentar usar DATABASE_URL primero (si está configurado en Seenode)
+DATABASE_URL = config('DATABASE_URL', default=None)
+
+if DATABASE_URL:
+    # Si DATABASE_URL está configurado, usarlo (puede ser MySQL o PostgreSQL)
+    import dj_database_url
+    DATABASES = {
+        'default': dj_database_url.config(
+            conn_max_age=600,
+            ssl_require=config('DB_SSL_REQUIRE', default=False, cast=bool)
+        )
     }
-}
+else:
+    # Configuración MySQL directa (desarrollo y producción con MySQL)
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.mysql',
+            'NAME': config('DB_NAME'),
+            'USER': config('DB_USER'),
+            'PASSWORD': config('DB_PASSWORD'),
+            'HOST': config('DB_HOST', default='localhost'),
+            'PORT': config('DB_PORT', default='3306', cast=int),
+            'OPTIONS': {
+                'charset': 'utf8mb4',
+                'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+            },
+        }
+    }
 
 
 # Password validation
@@ -109,8 +145,6 @@ AUTH_PASSWORD_VALIDATORS = [
         'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
     },
 ]
-
- 
 
 
 # Internationalization
@@ -135,31 +169,67 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# CORS settings
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",   
-]
 
-CORS_ALLOW_CREDENTIALS = True
-
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_HOST_USER = 'frank.castro.g@tecsup.edu.pe'
-EMAIL_HOST_PASSWORD = 'ygpiunjmdxjpbgmm'
+EMAIL_BACKEND = config('EMAIL_BACKEND')
+EMAIL_HOST = config('EMAIL_HOST')
+EMAIL_PORT = config('EMAIL_PORT')
+EMAIL_HOST_USER = config('EMAIL_HOST_USER')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
 EMAIL_USE_TLS = True
-DEFAULT_FROM_EMAIL = EMAIL_HOST_USER or 'no-reply@hotelplazatrujillo.local'
-LOOKUP_API_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIzOTc3OSIsImh0dHA6Ly9zY2hlbWFzLm1pY3Jvc29mdC5jb20vd3MvMjAwOC8wNi9pZGVudGl0eS9jbGFpbXMvcm9sZSI6ImNvbnN1bHRvciJ9.V1QFk9W-njWmWfHlr5sl7_xF4H0IcxXMN6ZNRHOe6QA'
 
-# Firebase Admin SDK
-import firebase_admin
-from firebase_admin import credentials
+# Lookup API Token
+LOOKUP_API_TOKEN = config('LOOKUP_API_TOKEN')
+
+# Google Gemini API Key
+GEMINI_API_KEY = config('GEMINI_API_KEY')
 
 # Ruta al archivo de service account key
-SERVICE_ACCOUNT_KEY_PATH = os.path.join(BASE_DIR, 'serviceAccountKey.json')
+FIREBASE_CREDENTIALS_JSON = config('FIREBASE_CREDENTIALS_JSON', default=None)
 
-if os.path.exists(SERVICE_ACCOUNT_KEY_PATH):
+if FIREBASE_CREDENTIALS_JSON:
+    try:
+        cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred)
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"Error parseando credenciales de Firebase: {e}")
+        # Intentar con archivo como fallback
+        SERVICE_ACCOUNT_KEY_PATH = os.path.join(BASE_DIR, 'serviceAccountKey.json')
+        if os.path.exists(SERVICE_ACCOUNT_KEY_PATH):
+            cred = credentials.Certificate(SERVICE_ACCOUNT_KEY_PATH)
+            firebase_admin.initialize_app(cred)
+        else:
+            print("Firebase no se pudo inicializar: credenciales no disponibles")
+elif os.path.exists(os.path.join(BASE_DIR, 'serviceAccountKey.json')):
+    # Fallback para desarrollo local
+    SERVICE_ACCOUNT_KEY_PATH = os.path.join(BASE_DIR, 'serviceAccountKey.json')
     cred = credentials.Certificate(SERVICE_ACCOUNT_KEY_PATH)
     firebase_admin.initialize_app(cred)
 else:
-    print("Archivo serviceAccountKey.json no encontrado. Firebase no se inicializará.")
+    print("Firebase no se inicializará: credenciales no encontradas")
+
+# Channels configuration
+ASGI_APPLICATION = 'Django_Hotel.asgi.application'
+
+# Channel layers - Redis para producción, InMemory para desarrollo
+REDIS_URL = config('REDIS_URL', default=None)
+
+if REDIS_URL:
+    # Producción: usar Redis
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels_redis.core.RedisChannelLayer',
+            'CONFIG': {
+                "hosts": [REDIS_URL],
+                "capacity": 1500,  # Número máximo de mensajes en cola
+                "expiry": 10,  # Tiempo de expiración en segundos
+            },
+        },
+    }
+else:
+    # Desarrollo: usar InMemory (solo funciona con una instancia)
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        },
+    }

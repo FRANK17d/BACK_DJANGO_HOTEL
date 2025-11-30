@@ -10,7 +10,7 @@ class ReservationSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'reservation_id', 'channel', 'guest_name', 'room_label',
             'check_in', 'check_out', 'total_amount', 'status', 'paid',
-            'document_type', 'document_number', 'arrival_time',
+            'document_type', 'document_number', 'arrival_time', 'departure_time',
             'num_people', 'num_adults', 'num_children', 'num_rooms',
             'address', 'department', 'province', 'district',
             'taxpayer_type', 'business_status', 'business_condition', 'room_type',
@@ -34,6 +34,7 @@ class ReservationSerializer(serializers.ModelSerializer):
             'documentType': data.get('document_type'),
             'documentNumber': data.get('document_number'),
             'arrivalTime': data.get('arrival_time'),
+            'departureTime': data.get('departure_time'),
             'numPeople': data.get('num_people'),
             'numAdults': data.get('num_adults'),
             'numChildren': data.get('num_children'),
