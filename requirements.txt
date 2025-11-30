@@ -1,0 +1,26 @@
+# Django y REST Framework
+Django==5.2.7
+djangorestframework==3.16.1
+django-cors-headers==4.9.0
+
+# Channels para WebSockets
+channels==4.3.2
+channels-redis==4.2.0
+daphne==4.2.1
+
+# Firebase
+firebase-admin==7.1.0
+
+# Google Gemini AI
+google-generativeai==0.8.5
+
+# Configuración y variables de entorno
+python-decouple==3.8
+
+# En lugar de mysqlclient, usar:
+PyMySQL==1.1.2
+
+# Producción (para Seenode)
+gunicorn==23.0.0
+dj-database-url==2.1.0
+whitenoise==6.8.2

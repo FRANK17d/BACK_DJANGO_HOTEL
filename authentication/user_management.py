@@ -4,11 +4,13 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
 from .models import UserProfile
 from django.core.mail import send_mail, EmailMultiAlternatives
 from django.conf import settings
 import os
+import secrets
+import urllib.parse
 
 @api_view(['POST'])
 def create_user_with_role(request):
@@ -53,6 +55,14 @@ def create_user_with_role(request):
         # Asignar custom claim (rol)
         auth.set_custom_user_claims(user_record.uid, {'role': role})
         
+        # Generar token de verificación solo para housekeeping y receptionist
+        email_verification_token = None
+        email_verified = True  # Por defecto, los admins no necesitan verificar
+        
+        if role in ['housekeeping', 'receptionist']:
+            email_verification_token = secrets.token_urlsafe(32)
+            email_verified = False
+        
         # Guardar datos adicionales en MySQL
         UserProfile.objects.create(
             firebase_uid=user_record.uid,
@@ -61,13 +71,32 @@ def create_user_with_role(request):
             role=role,
             salary=salary,
             entry_date=entry_date if entry_date else None,
-            attendance=attendance
+            attendance=attendance,
+            email_verified=email_verified,
+            email_verification_token=email_verification_token
         )
         # Enviar email con credenciales al nuevo usuario
         email_sent = False
         try:
             subject = 'Credenciales de acceso - Hotel Plaza Trujillo'
-            login_url = os.environ.get('FRONT_LOGIN_URL', '')
+            login_url = os.environ.get('FRONT_LOGIN_URL', 'http://localhost:3000')
+            base_url = os.environ.get('BACKEND_URL', 'http://localhost:8000')
+            
+            # Construir URL de verificación si es necesario
+            verification_url = ''
+            verification_button_html = ''
+            verification_text = ''
+            
+            if role in ['housekeeping', 'receptionist'] and email_verification_token:
+                verification_url = f"{base_url}/api/auth/verify-email/?token={urllib.parse.quote(email_verification_token)}&uid={user_record.uid}"
+                verification_button_html = f"""
+                    <div style="margin-top:24px; padding:20px; background:#f0fdf4; border:2px solid #22c55e; border-radius:12px; text-align:center;">
+                      <p style="margin:0 0 16px 0; font-size:14px; color:#166534; font-weight:600;">⚠️ Verificación Requerida</p>
+                      <p style="margin:0 0 16px 0; font-size:13px; color:#166534;">Debes verificar tu correo electrónico antes de poder iniciar sesión.</p>
+                      <a href="{verification_url}" style="display:inline-block;padding:12px 24px;background:#22c55e;color:#ffffff;border-radius:10px;text-decoration:none;font-size:14px;font-weight:600;">Verificar Correo Electrónico</a>
+                    </div>
+                """
+                verification_text = f'\n\nIMPORTANTE: Debes verificar tu correo electrónico antes de iniciar sesión.\nHaz clic en el siguiente enlace para verificar:\n{verification_url}'
 
             text_lines = [
                 f'Hola {display_name or ""},',
@@ -79,6 +108,7 @@ def create_user_with_role(request):
             if login_url:
                 text_lines += ['', f'Puedes iniciar sesión en: {login_url}']
             text_lines += [
+                verification_text,
                 '',
                 'Por seguridad, te recomendamos cambiar tu contraseña en tu primer inicio de sesión.',
                 '',
@@ -110,11 +140,12 @@ def create_user_with_role(request):
                         </tr>
                       </table>
                     </div>
+                    {verification_button_html}
                     <div style="margin-top:12px; padding:16px; background:#f8fafc; border:1px solid #e5e7eb; border-radius:12px;">
                       <p style="margin:0 0 8px 0; font-size:12px; color:#0f172a; font-weight:600;">Instrucciones</p>
                       <ul style="margin:0; padding-left:18px; color:#334155; font-size:12px;">
                         <li>Esta es tu contraseña inicial. Cámbiala tras el primer inicio de sesión.</li>
-                        <li>Puedes iniciar sesión inmediatamente con estas credenciales.</li>
+                        <li>{"Debes verificar tu correo electrónico antes de iniciar sesión." if role in ['housekeeping', 'receptionist'] else "Puedes iniciar sesión inmediatamente con estas credenciales."}</li>
                         <li>Guarda estas credenciales de forma segura.</li>
                       </ul>
                     </div>
@@ -198,18 +229,20 @@ def list_users(request):
                 entry_date = profile.entry_date.isoformat() if profile.entry_date else ''
                 attendance = profile.attendance or ''
                 profile_photo_url = profile.profile_photo_url or ''
+                email_verified_db = profile.email_verified
             else:
                 salary = ''
                 entry_date = ''
                 attendance = ''
                 profile_photo_url = ''
+                email_verified_db = True  # Por defecto True si no existe perfil
             
             users.append({
                 'uid': user.uid,
                 'email': user.email,
                 'display_name': user.display_name,
                 'role': role,
-                'email_verified': user.email_verified,
+                'email_verified': email_verified_db,  # Usar el valor de la base de datos
                 'disabled': user.disabled,
                 'creation_time': user.user_metadata.creation_timestamp,
                 'salary': salary,
@@ -326,6 +359,52 @@ def delete_user(request, uid):
             'error': f'Error eliminando usuario: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+@api_view(['PATCH'])
+def toggle_user_status(request, uid):
+    """
+    Habilitar o inhabilitar un usuario (solo para recepcionistas y hoteleros)
+    """
+    if not hasattr(request, 'firebase_user_role') or request.firebase_user_role != 'admin':
+        return Response({
+            'error': 'Acceso denegado. Se requiere rol de administrador.'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        # Obtener el usuario actual
+        user_record = auth.get_user(uid)
+        
+        # Obtener el rol del usuario
+        custom_claims = user_record.custom_claims or {}
+        user_role = custom_claims.get('role', '')
+        
+        # Solo permitir habilitar/inhabilitar recepcionistas y hoteleros
+        if user_role == 'admin':
+            return Response({
+                'error': 'No se puede habilitar/inhabilitar usuarios administradores.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Obtener el estado actual y cambiarlo
+        new_disabled_status = not user_record.disabled
+        
+        # Actualizar el estado en Firebase
+        auth.update_user(uid, disabled=new_disabled_status)
+        
+        status_text = "inhabilitado" if new_disabled_status else "habilitado"
+        
+        return Response({
+            'message': f'Usuario {status_text} exitosamente',
+            'disabled': new_disabled_status
+        })
+        
+    except auth.UserNotFoundError:
+        return Response({
+            'error': 'Usuario no encontrado'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({
+            'error': f'Error actualizando estado del usuario: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 @api_view(['GET', 'PATCH'])
 def update_own_profile(request):
     """
@@ -350,7 +429,8 @@ def update_own_profile(request):
                         'email': profile.email,
                         'display_name': profile.display_name,
                         'role': profile.role,
-                        'profile_photo_url': profile.profile_photo_url
+                        'profile_photo_url': profile.profile_photo_url,
+                        'email_verified': profile.email_verified
                     }
                 })
             except UserProfile.DoesNotExist:
@@ -361,7 +441,8 @@ def update_own_profile(request):
                         'email': user_record.email,
                         'display_name': user_record.display_name,
                         'role': 'receptionist',
-                        'profile_photo_url': ''
+                        'profile_photo_url': '',
+                        'email_verified': True  # Por defecto True si no existe perfil
                     }
                 })
 
@@ -397,13 +478,326 @@ def update_own_profile(request):
                 'email': updated_profile.email,
                 'display_name': updated_profile.display_name,
                 'role': updated_profile.role,
-                'profile_photo_url': updated_profile.profile_photo_url
+                'profile_photo_url': updated_profile.profile_photo_url,
+                'email_verified': updated_profile.email_verified
             }
         })
 
     except Exception as e:
         return Response({
             'error': f'Error actualizando perfil: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def verify_email(request):
+    """
+    Endpoint para verificar el correo electrónico usando un token
+    Accesible sin autenticación (AllowAny)
+    """
+    try:
+        token = request.GET.get('token')
+        uid = request.GET.get('uid')
+        
+        accept_header = request.META.get('HTTP_ACCEPT', '')
+        is_html_request = 'text/html' in accept_header
+        
+        def error_html_response(error_message):
+            if is_html_request:
+                login_url = os.environ.get('FRONT_LOGIN_URL', 'http://localhost:3000')
+                html_response = f"""
+                <!DOCTYPE html>
+                <html lang="es">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Error de Verificación - Hotel Plaza Trujillo</title>
+                    <style>
+                        body {{
+                            font-family: Inter, Arial, sans-serif;
+                            background: #0f172a;
+                            display: flex;
+                            justify-content: center;
+                            align-items: center;
+                            min-height: 100vh;
+                            margin: 0;
+                            padding: 20px;
+                        }}
+                        .container {{
+                            background: #ffffff;
+                            border-radius: 16px;
+                            padding: 40px;
+                            max-width: 500px;
+                            text-align: center;
+                            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+                        }}
+                        .error-icon {{
+                            width: 80px;
+                            height: 80px;
+                            background: #ef4444;
+                            border-radius: 50%;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            margin: 0 auto 20px;
+                        }}
+                        .error-icon svg {{
+                            width: 50px;
+                            height: 50px;
+                            color: white;
+                        }}
+                        h1 {{
+                            color: #0f172a;
+                            margin: 0 0 16px 0;
+                            font-size: 24px;
+                        }}
+                        p {{
+                            color: #334155;
+                            margin: 0 0 24px 0;
+                            font-size: 16px;
+                        }}
+                        .button {{
+                            display: inline-block;
+                            padding: 12px 24px;
+                            background: #ea580c;
+                            color: #ffffff;
+                            text-decoration: none;
+                            border-radius: 10px;
+                            font-size: 14px;
+                            font-weight: 600;
+                        }}
+                        .button:hover {{
+                            background: #c2410c;
+                        }}
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <div class="error-icon">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                            </svg>
+                        </div>
+                        <h1>Error de Verificación</h1>
+                        <p>{error_message}</p>
+                        <a href="{login_url}" class="button">Ir al Inicio de Sesión</a>
+                    </div>
+                </body>
+                </html>
+                """
+                return HttpResponse(html_response, content_type='text/html', status=400)
+            return Response({
+                'error': error_message
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if not token or not uid:
+            return error_html_response('Token y UID son requeridos')
+        
+        # Buscar el perfil del usuario
+        try:
+            profile = UserProfile.objects.get(firebase_uid=uid)
+        except UserProfile.DoesNotExist:
+            return error_html_response('Usuario no encontrado')
+        
+        # Verificar que el token coincida
+        if not profile.email_verification_token or profile.email_verification_token != token:
+            return error_html_response('Token de verificación inválido o expirado')
+        
+        # Verificar que el correo no esté ya verificado
+        if profile.email_verified:
+            if is_html_request:
+                login_url = os.environ.get('FRONT_LOGIN_URL', 'http://localhost:3000')
+                html_response = f"""
+                <!DOCTYPE html>
+                <html lang="es">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Correo Ya Verificado - Hotel Plaza Trujillo</title>
+                    <style>
+                        body {{
+                            font-family: Inter, Arial, sans-serif;
+                            background: #0f172a;
+                            display: flex;
+                            justify-content: center;
+                            align-items: center;
+                            min-height: 100vh;
+                            margin: 0;
+                            padding: 20px;
+                        }}
+                        .container {{
+                            background: #ffffff;
+                            border-radius: 16px;
+                            padding: 40px;
+                            max-width: 500px;
+                            text-align: center;
+                            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+                        }}
+                        .info-icon {{
+                            width: 80px;
+                            height: 80px;
+                            background: #3b82f6;
+                            border-radius: 50%;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            margin: 0 auto 20px;
+                        }}
+                        .info-icon svg {{
+                            width: 50px;
+                            height: 50px;
+                            color: white;
+                        }}
+                        h1 {{
+                            color: #0f172a;
+                            margin: 0 0 16px 0;
+                            font-size: 24px;
+                        }}
+                        p {{
+                            color: #334155;
+                            margin: 0 0 24px 0;
+                            font-size: 16px;
+                        }}
+                        .button {{
+                            display: inline-block;
+                            padding: 12px 24px;
+                            background: #ea580c;
+                            color: #ffffff;
+                            text-decoration: none;
+                            border-radius: 10px;
+                            font-size: 14px;
+                            font-weight: 600;
+                        }}
+                        .button:hover {{
+                            background: #c2410c;
+                        }}
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <div class="info-icon">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                        </div>
+                        <h1>Correo Ya Verificado</h1>
+                        <p>Tu correo electrónico ya está verificado. Puedes iniciar sesión normalmente.</p>
+                        <a href="{login_url}" class="button">Ir al Inicio de Sesión</a>
+                    </div>
+                </body>
+                </html>
+                """
+                return HttpResponse(html_response, content_type='text/html')
+            return Response({
+                'message': 'El correo electrónico ya está verificado',
+                'verified': True
+            }, status=status.HTTP_200_OK)
+        
+        # Actualizar el perfil
+        profile.email_verified = True
+        profile.email_verification_token = None  # Limpiar el token después de verificar
+        profile.save()
+        
+        # Actualizar Firebase para marcar el correo como verificado
+        try:
+            auth.update_user(uid, email_verified=True)
+        except Exception as e:
+            print(f"Error actualizando Firebase: {str(e)}")
+            # Continuar aunque falle la actualización de Firebase
+        
+        # Si la petición viene del navegador, mostrar una página HTML
+        if is_html_request:
+            login_url = os.environ.get('FRONT_LOGIN_URL', 'http://localhost:3000')
+            html_response = f"""
+            <!DOCTYPE html>
+            <html lang="es">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Correo Verificado - Hotel Plaza Trujillo</title>
+                <style>
+                    body {{
+                        font-family: Inter, Arial, sans-serif;
+                        background: #0f172a;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        min-height: 100vh;
+                        margin: 0;
+                        padding: 20px;
+                    }}
+                    .container {{
+                        background: #ffffff;
+                        border-radius: 16px;
+                        padding: 40px;
+                        max-width: 500px;
+                        text-align: center;
+                        box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+                    }}
+                    .success-icon {{
+                        width: 80px;
+                        height: 80px;
+                        background: #22c55e;
+                        border-radius: 50%;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        margin: 0 auto 20px;
+                    }}
+                    .success-icon svg {{
+                        width: 50px;
+                        height: 50px;
+                        color: white;
+                    }}
+                    h1 {{
+                        color: #0f172a;
+                        margin: 0 0 16px 0;
+                        font-size: 24px;
+                    }}
+                    p {{
+                        color: #334155;
+                        margin: 0 0 24px 0;
+                        font-size: 16px;
+                    }}
+                    .button {{
+                        display: inline-block;
+                        padding: 12px 24px;
+                        background: #ea580c;
+                        color: #ffffff;
+                        text-decoration: none;
+                        border-radius: 10px;
+                        font-size: 14px;
+                        font-weight: 600;
+                    }}
+                    .button:hover {{
+                        background: #c2410c;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="success-icon">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                    </div>
+                    <h1>¡Correo Verificado!</h1>
+                    <p>Tu correo electrónico ha sido verificado exitosamente. Ahora puedes iniciar sesión en el sistema.</p>
+                    <a href="{login_url}" class="button">Ir al Inicio de Sesión</a>
+                </div>
+            </body>
+            </html>
+            """
+            return HttpResponse(html_response, content_type='text/html')
+        
+        return Response({
+            'message': 'Correo electrónico verificado exitosamente',
+            'verified': True
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        return Response({
+            'error': f'Error verificando correo: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
