@@ -22,6 +22,7 @@ pytz==2024.2
 
 # En lugar de mysqlclient, usar:
 PyMySQL==1.1.2
+dj-database-url
 
 # Producción (para Seenode)
 gunicorn==23.0.0
