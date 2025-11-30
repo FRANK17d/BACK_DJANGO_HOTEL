@@ -35,7 +35,13 @@ DEBUG = config('DEBUG', default='False', cast=bool)
 ALLOWED_HOSTS = [ '*' ]
 
 # CORS settings
-CORS_ALLOWED_ORIGINS = [ '*' ]
+# Permitir orígenes específicos para producción y desarrollo
+CORS_ALLOWED_ORIGINS = [
+    "https://hotelplazatrujillo.netlify.app",
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
 
 CORS_ALLOW_CREDENTIALS = True
 
