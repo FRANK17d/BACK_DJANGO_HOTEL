@@ -230,11 +230,12 @@ except Exception as e:
 # Channels configuration
 ASGI_APPLICATION = 'Django_Hotel.asgi.application'
 
-# Channel layers - Redis para producción, InMemory para desarrollo
 REDIS_URL = config('REDIS_URL', default=None)
 
-if REDIS_URL:
-    # Producción: usar Redis
+# Validar que REDIS_URL no sea un placeholder
+if REDIS_URL and REDIS_URL not in ['host:6379', 'redis://host:6379', 'rediss://host:6379', '']:
+    # channels-redis puede aceptar la URL directamente
+    # Para Upstash con rediss:// (SSL), funciona directamente
     CHANNEL_LAYERS = {
         'default': {
             'BACKEND': 'channels_redis.core.RedisChannelLayer',
@@ -245,8 +246,13 @@ if REDIS_URL:
             },
         },
     }
+    # Ocultar la contraseña en el log
+    safe_url = REDIS_URL.split('@')[1] if '@' in REDIS_URL else 'URL configurada'
+    print(f"✅ Redis configurado: {safe_url}")
 else:
     # Desarrollo: usar InMemory (solo funciona con una instancia)
+    if REDIS_URL:
+        print(f"⚠️ ADVERTENCIA: REDIS_URL tiene un valor placeholder inválido. Usando InMemoryChannelLayer.")
     CHANNEL_LAYERS = {
         'default': {
             'BACKEND': 'channels.layers.InMemoryChannelLayer',
