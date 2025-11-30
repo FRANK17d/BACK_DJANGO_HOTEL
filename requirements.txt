@@ -17,6 +17,9 @@ google-generativeai==0.8.5
 # Configuración y variables de entorno
 python-decouple==3.8
 
+# Utilidades
+pytz==2024.2
+
 # En lugar de mysqlclient, usar:
 PyMySQL==1.1.2
 
