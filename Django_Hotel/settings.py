@@ -27,10 +27,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = config('SECRET_KEY')
+SECRET_KEY = config('SECRET_KEY', default='dummy-key-for-build-only')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = config('DEBUG', cast=bool)
+DEBUG = config('DEBUG', default='False', cast=bool)
 
 ALLOWED_HOSTS = [ '*' ]
 
@@ -112,12 +112,13 @@ if DATABASE_URL:
     }
 else:
     # Configuración MySQL directa (desarrollo y producción con MySQL)
+    # Valores por defecto para build (se sobrescribirán en producción)
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.mysql',
-            'NAME': config('DB_NAME'),
-            'USER': config('DB_USER'),
-            'PASSWORD': config('DB_PASSWORD'),
+            'NAME': config('DB_NAME', default='dummy_db'),
+            'USER': config('DB_USER', default='dummy_user'),
+            'PASSWORD': config('DB_PASSWORD', default='dummy_password'),
             'HOST': config('DB_HOST', default='localhost'),
             'PORT': config('DB_PORT', default='3306', cast=int),
             'OPTIONS': {
@@ -170,18 +171,18 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
-EMAIL_BACKEND = config('EMAIL_BACKEND')
-EMAIL_HOST = config('EMAIL_HOST')
-EMAIL_PORT = config('EMAIL_PORT')
-EMAIL_HOST_USER = config('EMAIL_HOST_USER')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
+EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
+EMAIL_HOST = config('EMAIL_HOST', default='localhost')
+EMAIL_PORT = config('EMAIL_PORT', default='587', cast=int)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 EMAIL_USE_TLS = True
 
 # Lookup API Token
-LOOKUP_API_TOKEN = config('LOOKUP_API_TOKEN')
+LOOKUP_API_TOKEN = config('LOOKUP_API_TOKEN', default='dummy-token')
 
 # Google Gemini API Key
-GEMINI_API_KEY = config('GEMINI_API_KEY')
+GEMINI_API_KEY = config('GEMINI_API_KEY', default='dummy-key')
 
 # Ruta al archivo de service account key
 FIREBASE_CREDENTIALS_JSON = config('FIREBASE_CREDENTIALS_JSON', default=None)
