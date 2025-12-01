@@ -178,12 +178,23 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'  # Agregar esta línea
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
-EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
+# Configuración de Email
+# Si EMAIL_HOST_USER y EMAIL_HOST_PASSWORD están configurados, usar SMTP
+# De lo contrario, usar consola (solo para desarrollo)
 EMAIL_HOST = config('EMAIL_HOST', default='localhost')
 EMAIL_PORT = config('EMAIL_PORT', default='587', cast=int)
 EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
-EMAIL_USE_TLS = True
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=EMAIL_HOST_USER or 'noreply@hotelplazatrujillo.com')
+
+# Usar SMTP si hay credenciales configuradas, sino usar consola (solo para desarrollo)
+if EMAIL_HOST_USER and EMAIL_HOST_PASSWORD and EMAIL_HOST != 'localhost':
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+    print(f"✅ Email configurado: SMTP en {EMAIL_HOST}:{EMAIL_PORT} desde {DEFAULT_FROM_EMAIL}")
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+    print("⚠️ Email en modo consola (solo desarrollo). Configura EMAIL_HOST, EMAIL_HOST_USER y EMAIL_HOST_PASSWORD para enviar correos reales.")
 
 # Lookup API Token
 LOOKUP_API_TOKEN = config('LOOKUP_API_TOKEN', default='dummy-token')
