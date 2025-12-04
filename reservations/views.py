@@ -174,6 +174,8 @@ def reservation_detail(request, reservation_id):
 
     if request.method == 'PATCH':
         payload = request.data or {}
+        old_room = obj.room_label  # Guardar habitación anterior para sincronizar
+        
         for key in ['channel', 'status']:
             val = payload.get(key)
             if val is not None:
@@ -218,6 +220,51 @@ def reservation_detail(request, reservation_id):
             except Exception:
                 pass
         obj.save()
+        
+        # Sincronizar estados de habitaciones si cambió la habitación
+        new_room = obj.room_label
+        if old_room != new_room:
+            from django.utils import timezone
+            from mantenimiento.models import BlockedRoom
+            
+            today = timezone.localtime().date()
+            blocked_rooms = set()
+            for br in BlockedRoom.objects.filter(blocked_until__gte=today):
+                blocked_rooms.add(str(br.room).strip())
+            
+            # Obtener todas las habitaciones ocupadas actualmente (Check-in)
+            occupied_rooms = set()
+            for res in Reservation.objects.filter(status='Check-in'):
+                if res.room_label:
+                    occupied_rooms.add(str(res.room_label).strip())
+                for ar in res.assigned_rooms.all():
+                    occupied_rooms.add(str(ar.room_code).strip())
+            
+            # Actualizar habitación anterior si existe
+            if old_room:
+                old_room_str = str(old_room).strip()
+                try:
+                    old_room_obj = Room.objects.get(code=old_room_str)
+                    if old_room_str in blocked_rooms:
+                        old_room_obj.status = 'Bloqueada'
+                    elif old_room_str in occupied_rooms:
+                        old_room_obj.status = 'Ocupada'
+                    else:
+                        old_room_obj.status = 'Disponible'
+                    old_room_obj.save(update_fields=['status'])
+                except Room.DoesNotExist:
+                    pass
+            
+            # Actualizar nueva habitación si existe y la reserva está en Check-in
+            if new_room and obj.status == 'Check-in':
+                new_room_str = str(new_room).strip()
+                try:
+                    new_room_obj = Room.objects.get(code=new_room_str)
+                    new_room_obj.status = 'Ocupada'
+                    new_room_obj.save(update_fields=['status'])
+                except Room.DoesNotExist:
+                    pass
+        
         data = ReservationSerializer(obj).data
         return Response({'reservation': data})
 
@@ -283,6 +330,8 @@ def calendar_note_detail(request, date):
 def available_rooms(request):
     ci = request.GET.get('check_in')
     co = request.GET.get('check_out')
+    exclude_reservation = request.GET.get('exclude_reservation')  # ID de reserva a excluir
+    
     if not ci or not co:
         return Response({'error': 'Parámetros incompletos'}, status=status.HTTP_400_BAD_REQUEST)
     check_in = parse_date(ci)
@@ -296,6 +345,9 @@ def available_rooms(request):
             continue
         # Excluir reservas canceladas
         if (r.status or '').lower() == 'cancelada':
+            continue
+        # Excluir la reserva actual si se está editando
+        if exclude_reservation and str(r.reservation_id) == str(exclude_reservation):
             continue
         if r.check_in < check_out and r.check_out > check_in:
             if r.room_label:
