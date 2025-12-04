@@ -414,14 +414,30 @@ def all_rooms(request):
     for br in BlockedRoom.objects.filter(blocked_until__gte=today):
         blocked_rooms.add(str(br.room).strip())
     
-    # Obtener habitaciones ocupadas (reservas con estado Check-in)
-    occupied_rooms = set()
+    # Obtener habitaciones ocupadas (reservas con estado Check-in) y su roomType
+    occupied_rooms = {}  # room_code -> roomType
     checkin_reservations = Reservation.objects.filter(status='Check-in')
     for res in checkin_reservations:
+        room_type = res.room_type or '-'
         if res.room_label:
-            occupied_rooms.add(str(res.room_label).strip())
+            occupied_rooms[str(res.room_label).strip()] = room_type
         for ar in res.assigned_rooms.all():
-            occupied_rooms.add(str(ar.room_code).strip())
+            occupied_rooms[str(ar.room_code).strip()] = room_type
+    
+    # Obtener habitaciones reservadas (reservas Confirmada dentro de fechas) y su roomType
+    reserved_rooms = {}  # room_code -> roomType
+    today_str = today.isoformat()
+    confirmed_reservations = Reservation.objects.filter(status='Confirmada')
+    for res in confirmed_reservations:
+        if res.check_in and res.check_out:
+            ci = res.check_in.isoformat() if hasattr(res.check_in, 'isoformat') else str(res.check_in)
+            co = res.check_out.isoformat() if hasattr(res.check_out, 'isoformat') else str(res.check_out)
+            if ci <= today_str < co:
+                room_type = res.room_type or '-'
+                if res.room_label:
+                    reserved_rooms[str(res.room_label).strip()] = room_type
+                for ar in res.assigned_rooms.all():
+                    reserved_rooms[str(ar.room_code).strip()] = room_type
     
     # Actualizar estado de cada habitación
     for room in Room.objects.all():
@@ -431,6 +447,8 @@ def all_rooms(request):
             new_status = 'Bloqueada'
         elif room_code in occupied_rooms:
             new_status = 'Ocupada'
+        elif room_code in reserved_rooms:
+            new_status = 'Reservada'
         else:
             new_status = 'Disponible'
         
@@ -438,13 +456,23 @@ def all_rooms(request):
             room.status = new_status
             room.save(update_fields=['status'])
     
-    # Devolver habitaciones con su estado actualizado
+    # Devolver habitaciones con su estado actualizado y roomType de la reserva
     items = []
     for rm in Room.objects.all().order_by('floor', 'code'):
+        room_code = str(rm.code).strip()
+        
+        # Determinar el tipo: si está ocupada/reservada, usar el roomType de la reserva
+        if room_code in occupied_rooms:
+            display_type = occupied_rooms[room_code]
+        elif room_code in reserved_rooms:
+            display_type = reserved_rooms[room_code]
+        else:
+            display_type = '-'
+        
         items.append({
             'code': rm.code, 
             'floor': rm.floor, 
-            'type': rm.type,
+            'type': display_type,
             'status': rm.status
         })
     return Response({'rooms': items})
