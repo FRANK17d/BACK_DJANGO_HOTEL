@@ -38,9 +38,32 @@ ALLOWED_HOSTS = [ '*' ]
 # Permitir orígenes específicos para producción y desarrollo
 CORS_ALLOWED_ORIGINS = [
     "https://hotelplazatrujillo.netlify.app",
+    "https://plazatrujillo.netlify.app",
     "http://localhost:3000",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+]
+
+# Permitir todos los headers necesarios
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
+
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
 ]
 
 CORS_ALLOW_CREDENTIALS = True
