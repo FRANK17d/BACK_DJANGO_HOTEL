@@ -44,7 +44,7 @@ if GEMINI_API_KEY:
 def get_dashboard_context():
     """Obtiene datos completos del hotel para el contexto del chatbot"""
     try:
-        from rooms.models import Room
+        from reservations.models import Room
         
         now = timezone.localtime()
         today = now.date()
@@ -92,26 +92,33 @@ def get_dashboard_context():
         # ========== HABITACIONES ==========
         total_rooms = Room.objects.count()
         
-        # Habitaciones ocupadas (con reserva activa hoy)
-        occupied_room_ids = Reservation.objects.filter(
+        # Habitaciones ocupadas - basado en room_label de reservas activas
+        occupied_room_labels = Reservation.objects.filter(
             check_in__lte=today,
             check_out__gt=today,
             status__in=['Confirmada', 'Check-in']
-        ).values_list('room_id', flat=True)
-        occupied_rooms = len(set(occupied_room_ids))
+        ).values_list('room_label', flat=True)
         
+        # Contar habitaciones únicas ocupadas
+        occupied_room_codes = set()
+        for label in occupied_room_labels:
+            # room_label puede ser "101" o "101, 102" para múltiples habitaciones
+            codes = [c.strip() for c in label.split(',')]
+            occupied_room_codes.update(codes)
+        
+        occupied_rooms = Room.objects.filter(code__in=occupied_room_codes).count()
         available_rooms = total_rooms - occupied_rooms
         occupancy_rate = (occupied_rooms / total_rooms * 100) if total_rooms > 0 else 0
         
         # Detalle de habitaciones
         rooms_detail = []
         for room in Room.objects.all()[:20]:  # Limitar a 20 para no sobrecargar
-            is_occupied = room.id in occupied_room_ids
+            is_occupied = room.code in occupied_room_codes
             rooms_detail.append({
-                'numero': room.room_number,
-                'tipo': room.room_type,
-                'precio': float(room.price),
-                'estado': 'Ocupada' if is_occupied else 'Disponible'
+                'numero': room.code,
+                'tipo': room.type or 'Estándar',
+                'piso': room.floor,
+                'estado': 'Ocupada' if is_occupied else room.status
             })
         
         # ========== RESERVAS ==========
@@ -156,9 +163,9 @@ def get_dashboard_context():
             status='Confirmada'
         ).order_by('check_in')[:10]:
             upcoming_reservations.append({
-                'codigo': res.reservation_code,
+                'codigo': res.reservation_id,
                 'huesped': res.guest_name,
-                'habitacion': res.room.room_number if res.room else 'N/A',
+                'habitacion': res.room_label or 'Sin asignar',
                 'check_in': res.check_in.strftime('%Y-%m-%d'),
                 'check_out': res.check_out.strftime('%Y-%m-%d'),
                 'monto': float(res.total_amount) if res.total_amount else 0
@@ -173,7 +180,7 @@ def get_dashboard_context():
         )[:10]:
             current_guests.append({
                 'nombre': res.guest_name,
-                'habitacion': res.room.room_number if res.room else 'N/A',
+                'habitacion': res.room_label or 'Sin asignar',
                 'check_out': res.check_out.strftime('%Y-%m-%d')
             })
         
