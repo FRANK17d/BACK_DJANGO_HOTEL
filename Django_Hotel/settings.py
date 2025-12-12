@@ -79,16 +79,9 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'corsheaders',
-    'channels',
     'authentication',
-    'messaging',
-    'reservations',
-    'cajacobros',
-    'lavanderia',
-    'mantenimiento',
-    'dashboard',
+    'huespedes',
     'chatbot',
-    'presence',
 ]
 
 MIDDLEWARE = [
@@ -141,7 +134,6 @@ if DATABASE_URL:
     }
 else:
     # Configuración MySQL directa (desarrollo y producción con MySQL)
-    # Valores por defecto para build (se sobrescribirán en producción)
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.mysql',
@@ -260,35 +252,3 @@ except Exception as e:
     # Si Firebase falla durante el build, no detener el proceso
     print(f"Advertencia: Firebase no se pudo inicializar: {e}")
     print("La aplicación continuará sin Firebase (esto puede ser normal durante el build)")
-
-# Channels configuration
-ASGI_APPLICATION = 'Django_Hotel.asgi.application'
-
-REDIS_URL = config('REDIS_URL', default=None)
-
-# Validar que REDIS_URL no sea un placeholder
-if REDIS_URL and REDIS_URL not in ['host:6379', 'redis://host:6379', 'rediss://host:6379', '']:
-    # channels-redis puede aceptar la URL directamente
-    # Para Upstash con rediss:// (SSL), funciona directamente
-    CHANNEL_LAYERS = {
-        'default': {
-            'BACKEND': 'channels_redis.core.RedisChannelLayer',
-            'CONFIG': {
-                "hosts": [REDIS_URL],
-                "capacity": 1500,  # Número máximo de mensajes en cola
-                "expiry": 10,  # Tiempo de expiración en segundos
-            },
-        },
-    }
-    # Ocultar la contraseña en el log
-    safe_url = REDIS_URL.split('@')[1] if '@' in REDIS_URL else 'URL configurada'
-    print(f"✅ Redis configurado: {safe_url}")
-else:
-    # Desarrollo: usar InMemory (solo funciona con una instancia)
-    if REDIS_URL:
-        print(f"⚠️ ADVERTENCIA: REDIS_URL tiene un valor placeholder inválido. Usando InMemoryChannelLayer.")
-    CHANNEL_LAYERS = {
-        'default': {
-            'BACKEND': 'channels.layers.InMemoryChannelLayer',
-        },
-    }

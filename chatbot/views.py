@@ -7,17 +7,7 @@ from django.utils import timezone
 from django.db import transaction
 from django.conf import settings
 from .models import ChatbotSession, ChatbotMessage
-from dashboard.views import (
-    dashboard_metrics,
-    monthly_revenue_chart,
-    payment_methods_chart,
-    occupancy_weekly_chart,
-    today_checkins_checkouts,
-    recent_reservations,
-    statistics_chart
-)
-from reservations.models import Reservation
-from cajacobros.models import Payment
+from huespedes.models import Huesped
 from django.db.models import Sum, Count
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -41,194 +31,89 @@ if GEMINI_API_KEY:
         print(f"Error al configurar Gemini: {e}")
 
 
-def get_dashboard_context():
-    """Obtiene datos completos del hotel para el contexto del chatbot"""
+def get_huespedes_context():
     try:
-        from reservations.models import Room
-        
         now = timezone.localtime()
         today = now.date()
-        current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        last_month_start = (current_month_start - timedelta(days=1)).replace(day=1)
-        week_start = today - timedelta(days=today.weekday())
-        
-        # ========== INGRESOS ==========
-        # Ingresos del mes actual
-        monthly_revenue = Payment.objects.filter(
-            created_at__gte=current_month_start,
-            status='Completado'
-        ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
-        
-        # Ingresos del mes anterior
-        last_month_revenue = Payment.objects.filter(
-            created_at__gte=last_month_start,
-            created_at__lt=current_month_start,
-            status='Completado'
-        ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
-        
-        # Ingresos de hoy
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        today_revenue = Payment.objects.filter(
-            created_at__gte=today_start,
-            status='Completado'
-        ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
-        
-        # Ingresos de la semana
-        weekly_revenue = Payment.objects.filter(
-            created_at__gte=week_start,
-            status='Completado'
-        ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
-        
-        # Pagos por método
-        payment_methods = Payment.objects.filter(
-            created_at__gte=current_month_start,
-            status='Completado'
-        ).values('method').annotate(
-            total=Sum('amount'),
-            count=Count('id')
+        current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).date()
+        total_registros = Huesped.objects.count()
+        registros_mes = Huesped.objects.filter(check_in__gte=current_month_start).count()
+        checkins_hoy = Huesped.objects.filter(check_in=today).count()
+        checkouts_hoy = Huesped.objects.filter(check_out=today).count()
+        huespedes_actuales_qs = Huesped.objects.filter(check_in__lte=today, check_out__gt=today)
+        huespedes_actuales = [
+            {
+                'nombre': h.nombres_apellidos,
+                'habitacion': h.numero_habitacion,
+                'check_out': h.check_out.strftime('%Y-%m-%d')
+            }
+            for h in huespedes_actuales_qs[:10]
+        ]
+        proximos_checkins_qs = Huesped.objects.filter(check_in__gt=today).order_by('check_in')[:10]
+        proximos_checkins = [
+            {
+                'nombre': h.nombres_apellidos,
+                'habitacion': h.numero_habitacion,
+                'check_in': h.check_in.strftime('%Y-%m-%d'),
+                'check_out': h.check_out.strftime('%Y-%m-%d')
+            }
+            for h in proximos_checkins_qs
+        ]
+        ingresos_mes = 0.0
+        for h in Huesped.objects.filter(check_in__gte=current_month_start):
+            try:
+                ingresos_mes += float(h.total_estadia)
+            except Exception:
+                pass
+        ingresos_hoy = 0.0
+        for h in Huesped.objects.filter(check_in=today):
+            try:
+                ingresos_hoy += float(h.total_estadia)
+            except Exception:
+                pass
+        por_canal = list(
+            Huesped.objects.values('canal_venta').annotate(count=Count('id')).order_by('-count')
         )
-        methods_summary = {p['method']: {'total': float(p['total']), 'count': p['count']} for p in payment_methods}
-        
-        # ========== HABITACIONES ==========
-        total_rooms = Room.objects.count()
-        
-        # Habitaciones ocupadas - basado en room_label de reservas activas
-        occupied_room_labels = Reservation.objects.filter(
-            check_in__lte=today,
-            check_out__gt=today,
-            status__in=['Confirmada', 'Check-in']
-        ).values_list('room_label', flat=True)
-        
-        # Contar habitaciones únicas ocupadas
-        occupied_room_codes = set()
-        for label in occupied_room_labels:
-            # room_label puede ser "101" o "101, 102" para múltiples habitaciones
-            codes = [c.strip() for c in label.split(',')]
-            occupied_room_codes.update(codes)
-        
-        occupied_rooms = Room.objects.filter(code__in=occupied_room_codes).count()
-        available_rooms = total_rooms - occupied_rooms
-        occupancy_rate = (occupied_rooms / total_rooms * 100) if total_rooms > 0 else 0
-        
-        # Detalle de habitaciones
-        rooms_detail = []
-        for room in Room.objects.all()[:20]:  # Limitar a 20 para no sobrecargar
-            is_occupied = room.code in occupied_room_codes
-            rooms_detail.append({
-                'numero': room.code,
-                'tipo': room.type or 'Estándar',
-                'piso': room.floor,
-                'estado': 'Ocupada' if is_occupied else room.status
+        por_tipo_habitacion = list(
+            Huesped.objects.values('tipo_habitacion').annotate(count=Count('id')).order_by('-count')
+        )
+        top_nacionalidades = list(
+            Huesped.objects.values('nacionalidad').annotate(count=Count('id')).order_by('-count')[:5]
+        )
+        recientes = []
+        for h in Huesped.objects.all().order_by('-fecha_registro')[:10]:
+            try:
+                total = float(h.total_estadia)
+            except Exception:
+                total = 0.0
+            recientes.append({
+                'nombre': h.nombres_apellidos,
+                'documento': h.numero_documento,
+                'ruc': h.numero_ruc or '',
+                'habitacion': h.numero_habitacion,
+                'check_in': h.check_in.strftime('%Y-%m-%d'),
+                'check_out': h.check_out.strftime('%Y-%m-%d'),
+                'total_estadia': total
             })
-        
-        # ========== RESERVAS ==========
-        # Reservas activas hoy
-        active_reservations = Reservation.objects.filter(
-            check_in__lte=today,
-            check_out__gte=today,
-            status__in=['Confirmada', 'Check-in']
-        ).count()
-        
-        # Check-ins de hoy
-        today_checkins = Reservation.objects.filter(
-            check_in=today
-        ).count()
-        
-        # Check-outs de hoy
-        today_checkouts = Reservation.objects.filter(
-            check_out=today
-        ).count()
-        
-        # Reservas pendientes (futuras)
-        pending_reservations = Reservation.objects.filter(
-            check_in__gt=today,
-            status='Confirmada'
-        ).count()
-        
-        # Reservas del mes
-        monthly_reservations = Reservation.objects.filter(
-            created_at__gte=current_month_start
-        ).count()
-        
-        # Reservas canceladas del mes
-        cancelled_reservations = Reservation.objects.filter(
-            created_at__gte=current_month_start,
-            status='Cancelada'
-        ).count()
-        
-        # Próximas reservas (lista)
-        upcoming_reservations = []
-        for res in Reservation.objects.filter(
-            check_in__gte=today,
-            status='Confirmada'
-        ).order_by('check_in')[:10]:
-            upcoming_reservations.append({
-                'codigo': res.reservation_id,
-                'huesped': res.guest_name,
-                'habitacion': res.room_label or 'Sin asignar',
-                'check_in': res.check_in.strftime('%Y-%m-%d'),
-                'check_out': res.check_out.strftime('%Y-%m-%d'),
-                'monto': float(res.total_amount) if res.total_amount else 0
-            })
-        
-        # Huéspedes actuales
-        current_guests = []
-        for res in Reservation.objects.filter(
-            check_in__lte=today,
-            check_out__gte=today,
-            status__in=['Confirmada', 'Check-in']
-        )[:10]:
-            current_guests.append({
-                'nombre': res.guest_name,
-                'habitacion': res.room_label or 'Sin asignar',
-                'check_out': res.check_out.strftime('%Y-%m-%d')
-            })
-        
-        # ========== ESTADÍSTICAS ==========
-        # Total de reservas históricas
-        total_reservations_ever = Reservation.objects.count()
-        
-        # Pagos recientes
-        recent_payments = []
-        for pay in Payment.objects.filter(status='Completado').order_by('-created_at')[:5]:
-            recent_payments.append({
-                'monto': float(pay.amount),
-                'metodo': pay.method,
-                'huesped': pay.guest_name,
-                'fecha': pay.created_at.strftime('%Y-%m-%d %H:%M')
-            })
-        
         return {
             'fecha_actual': now.strftime('%Y-%m-%d'),
             'hora_actual': now.strftime('%H:%M'),
-            # Ingresos
-            'ingresos_mes': float(monthly_revenue),
-            'ingresos_mes_anterior': float(last_month_revenue),
-            'ingresos_hoy': float(today_revenue),
-            'ingresos_semana': float(weekly_revenue),
-            'pagos_por_metodo': methods_summary,
-            # Habitaciones
-            'total_habitaciones': total_rooms,
-            'habitaciones_ocupadas': occupied_rooms,
-            'habitaciones_disponibles': available_rooms,
-            'tasa_ocupacion': round(occupancy_rate, 1),
-            'detalle_habitaciones': rooms_detail,
-            # Reservas
-            'reservas_activas': active_reservations,
-            'checkins_hoy': today_checkins,
-            'checkouts_hoy': today_checkouts,
-            'reservas_pendientes': pending_reservations,
-            'reservas_mes': monthly_reservations,
-            'reservas_canceladas_mes': cancelled_reservations,
-            'proximas_reservas': upcoming_reservations,
-            'huespedes_actuales': current_guests,
-            # Estadísticas
-            'total_reservas_historico': total_reservations_ever,
-            'pagos_recientes': recent_payments,
+            'total_registros': total_registros,
+            'registros_mes': registros_mes,
+            'ingresos_mes': round(ingresos_mes, 2),
+            'ingresos_hoy': round(ingresos_hoy, 2),
+            'checkins_hoy': checkins_hoy,
+            'checkouts_hoy': checkouts_hoy,
+            'huespedes_actuales': huespedes_actuales,
+            'proximos_checkins': proximos_checkins,
+            'por_canal': por_canal,
+            'por_tipo_habitacion': por_tipo_habitacion,
+            'top_nacionalidades': top_nacionalidades,
+            'recientes': recientes,
         }
     except Exception as e:
         import traceback
-        print(f"Error en get_dashboard_context: {e}")
+        print(f"Error en get_huespedes_context: {e}")
         print(traceback.format_exc())
         return {'error': str(e), 'fecha_actual': timezone.localtime().strftime('%Y-%m-%d')}
 
@@ -288,70 +173,56 @@ def process_message(request):
                 session=session
             ).exclude(id=user_message.id).order_by('timestamp')[:20]  # Últimos 20 mensajes (sin el actual)
             
-            # Obtener contexto del dashboard
-            dashboard_data = get_dashboard_context()
+            dashboard_data = get_huespedes_context()
             
             # Crear prompt del sistema con contexto completo
             import json
             
             # Formatear datos para el prompt
-            metodos_pago = dashboard_data.get('pagos_por_metodo', {})
-            metodos_str = ', '.join([f"{m}: S/{d['total']:,.2f} ({d['count']} pagos)" for m, d in metodos_pago.items()]) if metodos_pago else 'Sin datos'
-            
-            proximas = dashboard_data.get('proximas_reservas', [])
-            proximas_str = '\n'.join([f"  - {r['codigo']}: {r['huesped']} - Hab {r['habitacion']} - {r['check_in']} al {r['check_out']}" for r in proximas[:5]]) if proximas else '  Sin reservas próximas'
-            
             huespedes = dashboard_data.get('huespedes_actuales', [])
             huespedes_str = '\n'.join([f"  - {h['nombre']} - Hab {h['habitacion']} - Sale: {h['check_out']}" for h in huespedes[:5]]) if huespedes else '  Sin huéspedes actualmente'
-            
-            habitaciones = dashboard_data.get('detalle_habitaciones', [])
-            hab_disponibles = [h for h in habitaciones if h['estado'] == 'Disponible']
-            hab_ocupadas = [h for h in habitaciones if h['estado'] == 'Ocupada']
-            
-            system_prompt = f"""Eres un asistente virtual inteligente del Hotel Plaza Trujillo. 
-Tu función es ayudar al personal del hotel con información PRECISA y ACTUALIZADA sobre operaciones, estadísticas y gestión.
+            proximos = dashboard_data.get('proximos_checkins', [])
+            proximos_str = '\n'.join([f"  - {h['nombre']} - Hab {h['habitacion']} - {h['check_in']} al {h['check_out']}" for h in proximos[:5]]) if proximos else '  Sin próximos check-ins'
+            recientes = dashboard_data.get('recientes', [])
+            recientes_str = '\n'.join([f"  - {r['nombre']} ({r['documento']}) - Hab {r['habitacion']} - Total: S/ {r['total_estadia']:,.2f}" for r in recientes]) if recientes else '  Sin datos recientes'
+            por_canal = dashboard_data.get('por_canal', [])
+            por_canal_str = ', '.join([f"{i['canal_venta']}: {i['count']}" for i in por_canal]) if por_canal else 'Sin datos'
+            por_tipo = dashboard_data.get('por_tipo_habitacion', [])
+            por_tipo_str = ', '.join([f"{i['tipo_habitacion']}: {i['count']}" for i in por_tipo]) if por_tipo else 'Sin datos'
+            top_nac = dashboard_data.get('top_nacionalidades', [])
+            top_nac_str = ', '.join([f"{i['nacionalidad']}: {i['count']}" for i in top_nac]) if top_nac else 'Sin datos'
+            system_prompt = f"""Eres un asistente del Hotel Plaza Trujillo especializado en información de PASAJEROS.
 
-═══════════════════════════════════════════════════════════════
-📅 FECHA Y HORA ACTUAL: {dashboard_data.get('fecha_actual', 'N/A')} a las {dashboard_data.get('hora_actual', 'N/A')}
-═══════════════════════════════════════════════════════════════
+📅 Fecha y hora: {dashboard_data.get('fecha_actual', 'N/A')} {dashboard_data.get('hora_actual', 'N/A')}
 
-💰 FINANZAS:
-- Ingresos de HOY: S/ {dashboard_data.get('ingresos_hoy', 0):,.2f}
-- Ingresos de la SEMANA: S/ {dashboard_data.get('ingresos_semana', 0):,.2f}
-- Ingresos del MES ACTUAL: S/ {dashboard_data.get('ingresos_mes', 0):,.2f}
-- Ingresos del MES ANTERIOR: S/ {dashboard_data.get('ingresos_mes_anterior', 0):,.2f}
-- Pagos por método (este mes): {metodos_str}
+📊 Resumen de pasajeros:
+- Total de registros: {dashboard_data.get('total_registros', 0)}
+- Registros del mes: {dashboard_data.get('registros_mes', 0)}
+- Check-ins hoy: {dashboard_data.get('checkins_hoy', 0)}
+- Check-outs hoy: {dashboard_data.get('checkouts_hoy', 0)}
+- Ingresos hoy: S/ {dashboard_data.get('ingresos_hoy', 0):,.2f}
+- Ingresos del mes: S/ {dashboard_data.get('ingresos_mes', 0):,.2f}
 
-🏨 HABITACIONES:
-- Total de habitaciones: {dashboard_data.get('total_habitaciones', 0)}
-- Ocupadas: {dashboard_data.get('habitaciones_ocupadas', 0)}
-- Disponibles: {dashboard_data.get('habitaciones_disponibles', 0)}
-- Tasa de ocupación: {dashboard_data.get('tasa_ocupacion', 0)}%
-
-📋 RESERVAS:
-- Reservas activas (huéspedes actuales): {dashboard_data.get('reservas_activas', 0)}
-- Check-ins programados HOY: {dashboard_data.get('checkins_hoy', 0)}
-- Check-outs programados HOY: {dashboard_data.get('checkouts_hoy', 0)}
-- Reservas pendientes (futuras): {dashboard_data.get('reservas_pendientes', 0)}
-- Reservas creadas este mes: {dashboard_data.get('reservas_mes', 0)}
-- Reservas canceladas este mes: {dashboard_data.get('reservas_canceladas_mes', 0)}
-- Total histórico de reservas: {dashboard_data.get('total_reservas_historico', 0)}
-
-👥 HUÉSPEDES ACTUALES EN EL HOTEL:
+👥 Huéspedes actuales:
 {huespedes_str}
 
-📅 PRÓXIMAS RESERVAS:
-{proximas_str}
+🗓️ Próximos check-ins:
+{proximos_str}
 
-═══════════════════════════════════════════════════════════════
+🧾 Pasajeros recientes:
+{recientes_str}
 
-INSTRUCCIONES:
-- Responde de manera amigable, profesional y concisa
-- USA SIEMPRE los datos proporcionados arriba para responder con precisión
-- Formatea números y montos claramente (ej: S/ 1,234.56)
-- Siempre responde en español
-- Si te preguntan algo que no está en los datos, indica que no tienes esa información específica
-- Sé proactivo y ofrece información útil relacionada con las preguntas"""
+🔎 Distribución:
+- Por canal: {por_canal_str}
+- Por tipo de habitación: {por_tipo_str}
+- Top nacionalidades: {top_nac_str}
+
+Instrucciones:
+- Responde SOLO sobre pasajeros y datos relacionados.
+- Usa los datos anteriores para responder de forma precisa.
+- Formatea montos como S/ 1,234.56.
+- Responde en español y con claridad.
+- Si no hay datos suficientes, indícalo explícitamente."""
             
             # Construir historial para Gemini
             history = []
