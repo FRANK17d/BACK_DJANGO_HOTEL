@@ -27,17 +27,17 @@ class Huesped(models.Model):
         ('PASAPORTE', 'Pasaporte'),
     ]
     
-    nombres_apellidos = models.CharField(max_length=200, verbose_name='Nombres y Apellidos Completos')
+    nombres_apellidos = models.CharField(max_length=200, blank=True, null=True, verbose_name='Nombres y Apellidos Completos')
     tipo_documento = models.CharField(max_length=20, choices=TIPO_DOCUMENTO_CHOICES, default='DNI', verbose_name="Tipo de Documento")
-    numero_documento = models.CharField(max_length=20, verbose_name="Número de Documento")
+    numero_documento = models.CharField(max_length=20, blank=True, null=True, verbose_name="Número de Documento")
     numero_ruc = models.CharField(max_length=11, blank=True, null=True, verbose_name="Número de RUC")
     nombre_o_razon_social = models.CharField(max_length=300, blank=True, null=True, verbose_name="Nombre o Razón Social")
     estado = models.CharField(max_length=50, blank=True, null=True, verbose_name="Estado RUC")
     condicion = models.CharField(max_length=50, blank=True, null=True, verbose_name="Condición RUC")
     direccion_completa = models.TextField(blank=True, null=True, verbose_name="Dirección Completa")
-    fecha_nacimiento = models.DateField(verbose_name="Fecha de Nacimiento")
+    fecha_nacimiento = models.DateField(blank=True, null=True, verbose_name="Fecha de Nacimiento")
     nacionalidad = models.CharField(max_length=50, default='Peruana', verbose_name="Nacionalidad")
-    procedencia = models.CharField(max_length=100, verbose_name="Procedencia")
+    procedencia = models.CharField(max_length=100, blank=True, null=True, verbose_name="Procedencia")
     
     # === INFORMACIÓN DE HOSPEDAJE ===
     TIPO_HABITACION_CHOICES = [
@@ -71,11 +71,11 @@ class Huesped(models.Model):
         ('TARJETA', 'Tarjeta Débito/Crédito'),
     ]
     
-    check_in = models.DateField(verbose_name="Check-in")
-    check_out = models.DateField(verbose_name="Check-out")
-    tipo_habitacion = models.CharField(max_length=20, choices=TIPO_HABITACION_CHOICES, verbose_name="Tipo de Habitación")
-    numero_habitacion = models.CharField(max_length=3, choices=NUMERO_HABITACION_CHOICES, verbose_name="Número de Habitación")
-    tarifa_noche = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Tarifa por Noche (S/.)")
+    check_in = models.DateField(blank=True, null=True, verbose_name="Check-in")
+    check_out = models.DateField(blank=True, null=True, verbose_name="Check-out")
+    tipo_habitacion = models.CharField(max_length=20, choices=TIPO_HABITACION_CHOICES, blank=True, null=True, verbose_name="Tipo de Habitación")
+    numero_habitacion = models.CharField(max_length=3, choices=NUMERO_HABITACION_CHOICES, blank=True, null=True, verbose_name="Número de Habitación")
+    tarifa_noche = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True, verbose_name="Tarifa por Noche (S/.)")
     adultos = models.PositiveIntegerField(default=1, verbose_name="Adultos")
     ninos = models.PositiveIntegerField(default=0, verbose_name="Niños")
     metodo_pago = models.CharField(max_length=20, choices=METODO_PAGO_CHOICES, default='EFECTIVO', verbose_name="Método de Pago")
@@ -97,20 +97,35 @@ class Huesped(models.Model):
         ]
     
     def __str__(self):
-        return f"{self.nombres_apellidos} - {self.check_in.strftime('%d/%m/%Y')}"
+        name = self.nombres_apellidos or 'Huésped'
+        if self.check_in:
+            try:
+                return f"{name} - {self.check_in.strftime('%d/%m/%Y')}"
+            except Exception:
+                return name
+        return name
     
     @property
     def duracion_estadia(self):
         """Retorna la duración de la estadía en días"""
         if self.check_in and self.check_out:
-            delta = self.check_out - self.check_in
-            return max(1, delta.days)
+            try:
+                delta = self.check_out - self.check_in
+                return max(1, delta.days)
+            except Exception:
+                return 0
         return 0
     
     @property
     def total_estadia(self):
         """Calcula el total de la estadía"""
-        return self.tarifa_noche * self.duracion_estadia
+        try:
+            if self.tarifa_noche is not None:
+                return self.tarifa_noche * self.duracion_estadia
+        except Exception:
+            pass
+        from decimal import Decimal
+        return Decimal('0.00')
     
     @property
     def total_huespedes(self):

@@ -36,6 +36,7 @@ def get_huespedes_context():
         now = timezone.localtime()
         today = now.date()
         current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).date()
+        fmt = lambda d: d.strftime('%Y-%m-%d') if d else ''
         total_registros = Huesped.objects.count()
         registros_mes = Huesped.objects.filter(check_in__gte=current_month_start).count()
         checkins_hoy = Huesped.objects.filter(check_in=today).count()
@@ -45,7 +46,7 @@ def get_huespedes_context():
             {
                 'nombre': h.nombres_apellidos,
                 'habitacion': h.numero_habitacion,
-                'check_out': h.check_out.strftime('%Y-%m-%d')
+                'check_out': fmt(h.check_out)
             }
             for h in huespedes_actuales_qs[:10]
         ]
@@ -54,8 +55,8 @@ def get_huespedes_context():
             {
                 'nombre': h.nombres_apellidos,
                 'habitacion': h.numero_habitacion,
-                'check_in': h.check_in.strftime('%Y-%m-%d'),
-                'check_out': h.check_out.strftime('%Y-%m-%d')
+                'check_in': fmt(h.check_in),
+                'check_out': fmt(h.check_out)
             }
             for h in proximos_checkins_qs
         ]
@@ -91,8 +92,8 @@ def get_huespedes_context():
                 'documento': h.numero_documento,
                 'ruc': h.numero_ruc or '',
                 'habitacion': h.numero_habitacion,
-                'check_in': h.check_in.strftime('%Y-%m-%d'),
-                'check_out': h.check_out.strftime('%Y-%m-%d'),
+                'check_in': fmt(h.check_in),
+                'check_out': fmt(h.check_out),
                 'total_estadia': total
             })
         return {
@@ -117,6 +118,75 @@ def get_huespedes_context():
         print(traceback.format_exc())
         return {'error': str(e), 'fecha_actual': timezone.localtime().strftime('%Y-%m-%d')}
 
+
+def build_fallback_response(message_text, data):
+    try:
+        term = (message_text or '').lower()
+        ingresos_hoy = data.get('ingresos_hoy', 0)
+        ingresos_mes = data.get('ingresos_mes', 0)
+        checkins_hoy = data.get('checkins_hoy', 0)
+        checkouts_hoy = data.get('checkouts_hoy', 0)
+        total_registros = data.get('total_registros', 0)
+        huespedes_actuales = data.get('huespedes_actuales', [])
+        proximos_checkins = data.get('proximos_checkins', [])
+        por_canal = data.get('por_canal', [])
+        por_tipo_habitacion = data.get('por_tipo_habitacion', [])
+        top_nacionalidades = data.get('top_nacionalidades', [])
+
+        def fmt_soles(v):
+            try:
+                return f"S/ {float(v):,.2f}"
+            except Exception:
+                return "S/ 0.00"
+
+        # Respuestas especializadas por palabra clave
+        if 'ingreso' in term:
+            return (
+                f"Ingresos: Hoy {fmt_soles(ingresos_hoy)} | Mes {fmt_soles(ingresos_mes)}."
+            )
+        if 'check-in' in term or 'checkin' in term or 'llegad' in term:
+            if proximos_checkins:
+                lines = [
+                    f"- {h.get('nombre','')} Hab {h.get('habitacion','')} del {h.get('check_in','')} al {h.get('check_out','')}"
+                    for h in proximos_checkins[:5]
+                ]
+                return "Próximos check-ins:\n" + "\n".join(lines)
+            return "No hay próximos check-ins registrados."
+        if 'check-out' in term or 'checkout' in term or 'salid' in term:
+            return f"Check-outs hoy: {checkouts_hoy}."
+        if 'actual' in term or 'ocupación' in term or 'ocupacion' in term:
+            return f"Huéspedes alojados actualmente: {len(huespedes_actuales)}."
+        if 'canal' in term or 'whatsapp' in term:
+            if por_canal:
+                canal_str = ', '.join([f"{i.get('canal_venta','')}: {i.get('count',0)}" for i in por_canal])
+                return f"Distribución por canal: {canal_str}."
+            return "Sin datos por canal."
+
+        # Resumen general si no coincide nada específico
+        seccion_actuales = (
+            "Huéspedes actuales:\n" +
+            ("\n".join([f"- {h.get('nombre','')} Hab {h.get('habitacion','')} - Sale: {h.get('check_out','')}" for h in huespedes_actuales[:5]])
+             if huespedes_actuales else "Sin huéspedes actualmente")
+        )
+        seccion_proximos = (
+            "Próximos check-ins:\n" +
+            ("\n".join([f"- {h.get('nombre','')} Hab {h.get('habitacion','')} - {h.get('check_in','')} al {h.get('check_out','')}" for h in proximos_checkins[:5]])
+             if proximos_checkins else "Sin próximos check-ins")
+        )
+        canal_str = ', '.join([f"{i.get('canal_venta','')}: {i.get('count',0)}" for i in por_canal]) if por_canal else 'Sin datos'
+        tipo_str = ', '.join([f"{i.get('tipo_habitacion','')}: {i.get('count',0)}" for i in por_tipo_habitacion]) if por_tipo_habitacion else 'Sin datos'
+        nac_str = ', '.join([f"{i.get('nacionalidad','')}: {i.get('count',0)}" for i in top_nacionalidades]) if top_nacionalidades else 'Sin datos'
+
+        return (
+            f"Resumen:\n"
+            f"- Total registros: {total_registros}\n"
+            f"- Check-ins hoy: {checkins_hoy} | Check-outs hoy: {checkouts_hoy}\n"
+            f"- Ingresos hoy: {fmt_soles(ingresos_hoy)} | Mes: {fmt_soles(ingresos_mes)}\n\n"
+            f"{seccion_actuales}\n\n{seccion_proximos}\n\n"
+            f"Distribución: Canal [{canal_str}] | Tipo habitación [{tipo_str}] | Top nacionalidades [{nac_str}]"
+        )
+    except Exception:
+        return "El servicio de IA no está disponible temporalmente. Intenta de nuevo más tarde."
 
 @api_view(['POST'])
 def process_message(request):
@@ -217,12 +287,14 @@ def process_message(request):
 - Por tipo de habitación: {por_tipo_str}
 - Top nacionalidades: {top_nac_str}
 
-Instrucciones:
-- Responde SOLO sobre pasajeros y datos relacionados.
-- Usa los datos anteriores para responder de forma precisa.
-- Formatea montos como S/ 1,234.56.
-- Responde en español y con claridad.
-- Si no hay datos suficientes, indícalo explícitamente."""
+            Instrucciones:
+            - Responde SOLO sobre lo que el usuario pregunta.
+            - No menciones canales de venta (incluido WhatsApp) ni su ausencia a menos que el usuario lo solicite explícitamente.
+            - Si faltan datos, indícalo únicamente respecto al tema preguntado (no generalices ni agregues temas no solicitados).
+            - Usa los datos anteriores para responder de forma precisa.
+            - Formatea montos como S/ 1,234.56.
+            - Responde en español y con claridad.
+            - Si no hay datos suficientes sobre el tema preguntado, indícalo explícitamente sin añadir información irrelevante."""
             
             # Construir historial para Gemini
             history = []
@@ -263,10 +335,18 @@ Instrucciones:
                     continue
             
             if model is None:
+                # Fallback a respuesta basada en datos locales
+                assistant_response = build_fallback_response(message_text, dashboard_data)
+                assistant_message = ChatbotMessage.objects.create(
+                    session=session,
+                    role='assistant',
+                    content=assistant_response
+                )
                 return Response({
-                    'error': f'No se pudo inicializar ningún modelo. Errores: {"; ".join(model_errors)}',
-                    'message': 'Error al inicializar el modelo de IA. Por favor, verifica tu API key de Gemini y que tengas acceso a los modelos.'
-                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                    'message': assistant_response,
+                    'timestamp': assistant_message.timestamp.isoformat(),
+                    'session_id': session_id
+                })
             
             # Construir el mensaje completo con contexto del sistema
             full_message = f"{system_prompt}\n\nUsuario: {message_text}"
@@ -287,12 +367,18 @@ Instrucciones:
                     # Primera interacción, generar contenido directamente
                     response = model.generate_content(full_message)
             except Exception as gen_error:
-                error_msg = str(gen_error)
-                print(f"Error al generar respuesta con {model_name}: {error_msg}")
+                # Fallback a respuesta basada en datos locales
+                assistant_response = build_fallback_response(message_text, dashboard_data)
+                assistant_message = ChatbotMessage.objects.create(
+                    session=session,
+                    role='assistant',
+                    content=assistant_response
+                )
                 return Response({
-                    'error': f'Error al generar respuesta: {error_msg}',
-                    'message': 'Error al procesar tu mensaje. Por favor, verifica tu API key de Gemini e inténtalo de nuevo.'
-                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                    'message': assistant_response,
+                    'timestamp': assistant_message.timestamp.isoformat(),
+                    'session_id': session_id
+                })
             
             # Extraer el texto de la respuesta
             assistant_response = None

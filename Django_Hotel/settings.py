@@ -37,7 +37,7 @@ ALLOWED_HOSTS = [ '*' ]
 # CORS settings
 # Permitir orígenes específicos para producción y desarrollo
 CORS_ALLOWED_ORIGINS = [
-    "https://hotelplazatrujillo.netlify.app",
+    "https://hotelplazatr.netlify.app",
     "https://plazatrujillo.netlify.app",
     "http://localhost:3000",
     "http://localhost:5173",

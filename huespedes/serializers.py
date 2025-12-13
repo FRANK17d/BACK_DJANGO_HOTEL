@@ -45,10 +45,21 @@ class HuespedSerializer(serializers.ModelSerializer):
             'total_huespedes',
         ]
         read_only_fields = ['id', 'fecha_registro', 'fecha_actualizacion']
+        extra_kwargs = {
+            'nombres_apellidos': {'required': False, 'allow_blank': True, 'allow_null': True},
+            'numero_documento': {'required': False, 'allow_blank': True, 'allow_null': True},
+            'fecha_nacimiento': {'required': False, 'allow_null': True},
+            'procedencia': {'required': False, 'allow_blank': True, 'allow_null': True},
+            'check_in': {'required': False, 'allow_null': True},
+            'check_out': {'required': False, 'allow_null': True},
+            'tipo_habitacion': {'required': False, 'allow_blank': True, 'allow_null': True},
+            'numero_habitacion': {'required': False, 'allow_blank': True, 'allow_null': True},
+            'tarifa_noche': {'required': False, 'allow_null': True},
+        }
     
     def validate_check_out(self, value):
         """Validar que check_out sea posterior a check_in"""
-        if 'check_in' in self.initial_data:
+        if 'check_in' in self.initial_data and self.initial_data.get('check_in'):
             from datetime import datetime
             check_in = self.initial_data.get('check_in')
             if isinstance(check_in, str):
