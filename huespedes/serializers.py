@@ -94,15 +94,24 @@ class HuespedSerializer(serializers.ModelSerializer):
     
     def validate_check_out(self, value):
         """Validar que check_out sea igual o posterior a check_in (permite DAY USE)"""
+        # Si value es None, permitir (fecha de salida no definida aún)
+        if value is None:
+            return value
+            
         if 'check_in' in self.initial_data and self.initial_data.get('check_in'):
             from datetime import datetime
             check_in = self.initial_data.get('check_in')
             if isinstance(check_in, str):
-                check_in = datetime.strptime(check_in, '%Y-%m-%d').date()
+                try:
+                    check_in = datetime.strptime(check_in, '%Y-%m-%d').date()
+                except ValueError:
+                    return value  # Si no se puede parsear, dejar pasar
             
-            # Permitir DAY USE: check_out puede ser igual a check_in
-            if value < check_in:
-                raise serializers.ValidationError("La fecha de check-out no puede ser anterior a check-in")
+            # Verificar que check_in no sea None antes de comparar
+            if check_in is not None:
+                # Permitir DAY USE: check_out puede ser igual a check_in
+                if value < check_in:
+                    raise serializers.ValidationError("La fecha de check-out no puede ser anterior a check-in")
         return value
     
     def validate_numero_ruc(self, value):
