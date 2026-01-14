@@ -10,6 +10,7 @@ class Huesped(models.Model):
         ('BOOKING', 'Booking'),
         ('WHATSAPP', 'WhatsApp'),
         ('RECEPCION', 'Recepción'),
+        ('EXPEDIA', 'Expedia'),
     ]
     
     COMPROBANTE_CHOICES = [
@@ -38,6 +39,7 @@ class Huesped(models.Model):
     fecha_nacimiento = models.DateField(blank=True, null=True, verbose_name="Fecha de Nacimiento")
     nacionalidad = models.CharField(max_length=50, default='Peruana', verbose_name="Nacionalidad")
     procedencia = models.CharField(max_length=100, blank=True, null=True, verbose_name="Procedencia")
+    celular = models.CharField(max_length=9, blank=True, null=True, verbose_name="Número de Celular")
     
     # === INFORMACIÓN DE HOSPEDAJE ===
     TIPO_HABITACION_CHOICES = [
@@ -71,14 +73,23 @@ class Huesped(models.Model):
         ('TARJETA', 'Tarjeta Débito/Crédito'),
     ]
     
+    TIPO_DESAYUNO_CHOICES = [
+        ('NINGUNO', 'Ninguno'),
+        ('CONTINENTAL', 'Desayuno Continental'),
+        ('AMERICANO', 'Desayuno Americano'),
+    ]
+    
     check_in = models.DateField(blank=True, null=True, verbose_name="Check-in")
+    hora_entrada = models.TimeField(blank=True, null=True, verbose_name="Hora de Entrada")
     check_out = models.DateField(blank=True, null=True, verbose_name="Check-out")
+    hora_salida = models.TimeField(blank=True, null=True, verbose_name="Hora de Salida")
     tipo_habitacion = models.CharField(max_length=20, choices=TIPO_HABITACION_CHOICES, blank=True, null=True, verbose_name="Tipo de Habitación")
     numero_habitacion = models.CharField(max_length=3, choices=NUMERO_HABITACION_CHOICES, blank=True, null=True, verbose_name="Número de Habitación")
     tarifa_noche = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True, verbose_name="Tarifa por Noche (S/.)")
     adultos = models.PositiveIntegerField(default=1, verbose_name="Adultos")
     ninos = models.PositiveIntegerField(default=0, verbose_name="Niños")
     metodo_pago = models.CharField(max_length=20, choices=METODO_PAGO_CHOICES, default='EFECTIVO', verbose_name="Método de Pago")
+    tipo_desayuno = models.CharField(max_length=20, choices=TIPO_DESAYUNO_CHOICES, default='NINGUNO', verbose_name="Tipo de Desayuno")
     observacion = models.TextField(blank=True, null=True, verbose_name="Observación")
     
     # === CAMPOS DE CONTROL ===
@@ -107,14 +118,29 @@ class Huesped(models.Model):
     
     @property
     def duracion_estadia(self):
-        """Retorna la duración de la estadía en días"""
-        if self.check_in and self.check_out:
+        """Retorna la duración de la estadía en días (mínimo 1 para DAY USE)"""
+        if self.check_in:
             try:
-                delta = self.check_out - self.check_in
-                return max(1, delta.days)
+                if self.check_out:
+                    delta = self.check_out - self.check_in
+                    # DAY USE: si check_in == check_out, cuenta como 1 día
+                    return max(1, delta.days) if delta.days > 0 else 1
+                else:
+                    # Si no hay fecha de salida, calcular hasta hoy (mínimo 1 día)
+                    from django.utils import timezone
+                    today = timezone.now().date()
+                    delta = today - self.check_in
+                    return max(1, delta.days)
             except Exception:
                 return 0
         return 0
+
+    @property
+    def is_day_use(self):
+        """Indica si es un DAY USE (check-in y check-out el mismo día)"""
+        if self.check_in and self.check_out:
+            return self.check_in == self.check_out
+        return False
     
     @property
     def total_estadia(self):
@@ -131,3 +157,68 @@ class Huesped(models.Model):
     def total_huespedes(self):
         """Total de huéspedes (adultos + niños)"""
         return self.adultos + self.ninos
+
+
+class Acompanante(models.Model):
+    """
+    Modelo para registrar acompañantes de un huésped principal
+    """
+    TIPO_DOCUMENTO_CHOICES = [
+        ('DNI', 'DNI'),
+        ('CE', 'CE'),
+        ('PASAPORTE', 'Pasaporte'),
+    ]
+    
+    huesped = models.ForeignKey(
+        Huesped, 
+        on_delete=models.CASCADE, 
+        related_name='acompanantes',
+        verbose_name="Huésped Principal"
+    )
+    tipo_documento = models.CharField(
+        max_length=20, 
+        choices=TIPO_DOCUMENTO_CHOICES, 
+        default='DNI', 
+        verbose_name="Tipo de Documento"
+    )
+    numero_documento = models.CharField(
+        max_length=20, 
+        blank=True, 
+        null=True, 
+        verbose_name="Número de Documento"
+    )
+    nombres_apellidos = models.CharField(
+        max_length=200, 
+        blank=True, 
+        null=True, 
+        verbose_name='Nombres y Apellidos Completos'
+    )
+    fecha_nacimiento = models.DateField(
+        blank=True, 
+        null=True, 
+        verbose_name="Fecha de Nacimiento"
+    )
+    nacionalidad = models.CharField(
+        max_length=50, 
+        default='Peruana', 
+        verbose_name="Nacionalidad"
+    )
+    procedencia = models.CharField(
+        max_length=100, 
+        blank=True, 
+        null=True, 
+        verbose_name="Procedencia"
+    )
+    fecha_registro = models.DateTimeField(
+        auto_now_add=True, 
+        verbose_name="Fecha de Registro"
+    )
+    
+    class Meta:
+        db_table = 'acompanantes'
+        verbose_name = 'Acompañante'
+        verbose_name_plural = 'Acompañantes'
+        ordering = ['id']
+    
+    def __str__(self):
+        return f"{self.nombres_apellidos or 'Acompañante'} - {self.huesped}"

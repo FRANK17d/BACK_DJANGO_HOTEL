@@ -1,4 +1,7 @@
 import os
+import sys
+import re
+import json
 import google.generativeai as genai
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -11,6 +14,18 @@ from huespedes.models import Huesped
 from django.db.models import Sum, Count
 from datetime import datetime, timedelta
 from decimal import Decimal
+from urllib.request import urlopen, Request
+from urllib.error import URLError, HTTPError
+
+
+def safe_print(message):
+    """Print que maneja caracteres Unicode de forma segura para servidores con ASCII"""
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        # Convertir a ASCII ignorando caracteres no soportados
+        safe_message = str(message).encode('ascii', 'ignore').decode('ascii')
+        print(safe_message)
 
 
 # Configurar Gemini - obtener desde settings o variable de entorno
@@ -28,7 +43,181 @@ if GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
     except Exception as e:
-        print(f"Error al configurar Gemini: {e}")
+        safe_print(f"Error al configurar Gemini: {e}")
+
+
+def lookup_documento_api(doc_type, number):
+    """
+    Consulta la API de Factiliza para obtener información de DNI, CE o RUC.
+    Retorna un diccionario con los datos o None si falla.
+    """
+    try:
+        doc_type = doc_type.upper()
+        number = str(number).strip()
+        
+        if not doc_type or not number:
+            return None
+        
+        token = getattr(settings, 'LOOKUP_API_TOKEN', None) or os.environ.get('LOOKUP_API_TOKEN', '')
+        
+        # URLs por defecto (Factiliza)
+        if doc_type == 'DNI':
+            url = f"https://api.factiliza.com/v1/dni/info/{number}"
+        elif doc_type == 'RUC':
+            url = f"https://api.factiliza.com/v1/ruc/info/{number}"
+        elif doc_type == 'CE':
+            url = f"https://api.factiliza.com/v1/cee/info/{number}"
+        else:
+            return None
+        
+        headers = {}
+        if token:
+            headers['Authorization'] = f"Bearer {token}"
+        
+        req = Request(url, headers=headers)
+        with urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode('utf-8')
+            payload = json.loads(raw)
+        
+        success = bool(payload.get('success'))
+        data = payload.get('data') or {}
+        
+        if not success:
+            return {'error': payload.get('message') or 'Consulta fallida'}
+        
+        # Extraer información relevante según el tipo de documento
+        if doc_type == 'DNI':
+            nombre = data.get('nombre_completo') or (
+                ((data.get('nombres') or '') + ' ' + (data.get('apellido_paterno') or '') + ' ' + (data.get('apellido_materno') or '')).strip()
+            )
+            return {
+                'tipo': 'DNI',
+                'numero': number,
+                'nombre': nombre,
+                'nombres': data.get('nombres', ''),
+                'apellido_paterno': data.get('apellido_paterno', ''),
+                'apellido_materno': data.get('apellido_materno', ''),
+            }
+        elif doc_type == 'RUC':
+            return {
+                'tipo': 'RUC',
+                'numero': number,
+                'razon_social': data.get('nombre_o_razon_social') or data.get('razon_social', ''),
+                'estado': data.get('estado') or data.get('estado_del_contribuyente', ''),
+                'condicion': data.get('condicion') or data.get('condicion_del_contribuyente', ''),
+                'direccion': data.get('direccion_completa') or data.get('domicilio_fiscal', ''),
+                'tipo_contribuyente': data.get('tipo_contribuyente', ''),
+            }
+        elif doc_type == 'CE':
+            nombre = (
+                ((data.get('nombres') or '') + ' ' + (data.get('apellido_paterno') or '') + ' ' + (data.get('apellido_materno') or '')).strip()
+            )
+            return {
+                'tipo': 'CE',
+                'numero': number,
+                'nombre': nombre,
+                'nombres': data.get('nombres', ''),
+                'apellido_paterno': data.get('apellido_paterno', ''),
+                'apellido_materno': data.get('apellido_materno', ''),
+            }
+        
+        return data
+        
+    except HTTPError as e:
+        safe_print(f"Error HTTP al consultar documento: {e.code}")
+        return {'error': f'Error HTTP {e.code}'}
+    except URLError as e:
+        safe_print(f"Error de conexión al consultar documento: {e}")
+        return {'error': 'No se pudo conectar al servicio de consultas'}
+    except Exception as e:
+        safe_print(f"Error al consultar documento: {e}")
+        return {'error': str(e)}
+
+
+def detectar_y_consultar_documento(message_text):
+    """
+    Detecta si el mensaje contiene una consulta de DNI, CE o RUC y la procesa.
+    Retorna una respuesta formateada o None si no es una consulta de documento.
+    """
+    text = message_text.lower().strip()
+    
+    # Patrones para detectar consultas de documentos
+    # DNI: 8 dígitos
+    dni_patterns = [
+        r'(?:consulta|busca|buscar|quien\s+es|informacion|info|datos)?\s*(?:del?\s+)?dni\s*[:\-]?\s*(\d{8})\b',
+        r'\bdni\s*[:\-]?\s*(\d{8})\b',
+        r'(?:consulta|busca|buscar|quien\s+es)\s+(\d{8})\b',
+    ]
+    
+    # RUC: 11 dígitos
+    ruc_patterns = [
+        r'(?:consulta|busca|buscar|informacion|info|datos)?\s*(?:del?\s+)?ruc\s*[:\-]?\s*(\d{11})\b',
+        r'\bruc\s*[:\-]?\s*(\d{11})\b',
+    ]
+    
+    # CE: Carné de Extranjería
+    ce_patterns = [
+        r'(?:consulta|busca|buscar|quien\s+es|informacion|info|datos)?\s*(?:del?\s+)?(?:ce|carne\s+de\s+extranjeria|carnet\s+extranjeria)\s*[:\-]?\s*(\d{9,12})\b',
+        r'\bce\s*[:\-]?\s*(\d{9,12})\b',
+    ]
+    
+    # Buscar DNI
+    for pattern in dni_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            numero = match.group(1)
+            resultado = lookup_documento_api('DNI', numero)
+            if resultado:
+                if 'error' in resultado:
+                    return f"No se pudo consultar el DNI {numero}: {resultado['error']}"
+                return (
+                    f"**Consulta DNI: {numero}**\n\n"
+                    f"**Nombre completo:** {resultado.get('nombre', 'No disponible')}\n"
+                    f"- Nombres: {resultado.get('nombres', 'N/A')}\n"
+                    f"- Apellido paterno: {resultado.get('apellido_paterno', 'N/A')}\n"
+                    f"- Apellido materno: {resultado.get('apellido_materno', 'N/A')}"
+                )
+            return f"No se encontró información para el DNI {numero}."
+    
+    # Buscar RUC
+    for pattern in ruc_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            numero = match.group(1)
+            resultado = lookup_documento_api('RUC', numero)
+            if resultado:
+                if 'error' in resultado:
+                    return f"No se pudo consultar el RUC {numero}: {resultado['error']}"
+                return (
+                    f"**Consulta RUC: {numero}**\n\n"
+                    f"**Razón Social:** {resultado.get('razon_social', 'No disponible')}\n"
+                    f"- Estado: {resultado.get('estado', 'N/A')}\n"
+                    f"- Condición: {resultado.get('condicion', 'N/A')}\n"
+                    f"- Dirección: {resultado.get('direccion', 'N/A')}\n"
+                    f"- Tipo: {resultado.get('tipo_contribuyente', 'N/A')}"
+                )
+            return f"No se encontró información para el RUC {numero}."
+    
+    # Buscar CE
+    for pattern in ce_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            numero = match.group(1)
+            resultado = lookup_documento_api('CE', numero)
+            if resultado:
+                if 'error' in resultado:
+                    return f"No se pudo consultar el CE {numero}: {resultado['error']}"
+                return (
+                    f"**Consulta Carné de Extranjería: {numero}**\n\n"
+                    f"**Nombre completo:** {resultado.get('nombre', 'No disponible')}\n"
+                    f"- Nombres: {resultado.get('nombres', 'N/A')}\n"
+                    f"- Apellido paterno: {resultado.get('apellido_paterno', 'N/A')}\n"
+                    f"- Apellido materno: {resultado.get('apellido_materno', 'N/A')}"
+                )
+            return f"No se encontró información para el CE {numero}."
+    
+    # No es una consulta de documento
+    return None
 
 
 def get_huespedes_context():
@@ -46,7 +235,10 @@ def get_huespedes_context():
             {
                 'nombre': h.nombres_apellidos,
                 'habitacion': h.numero_habitacion,
-                'check_out': fmt(h.check_out)
+                'check_in': fmt(h.check_in),
+                'hora_entrada': h.hora_entrada.strftime('%I:%M %p') if h.hora_entrada else '',
+                'check_out': fmt(h.check_out),
+                'hora_salida': h.hora_salida.strftime('%I:%M %p') if h.hora_salida else ''
             }
             for h in huespedes_actuales_qs[:10]
         ]
@@ -56,7 +248,9 @@ def get_huespedes_context():
                 'nombre': h.nombres_apellidos,
                 'habitacion': h.numero_habitacion,
                 'check_in': fmt(h.check_in),
-                'check_out': fmt(h.check_out)
+                'hora_entrada': h.hora_entrada.strftime('%I:%M %p') if h.hora_entrada else '',
+                'check_out': fmt(h.check_out),
+                'hora_salida': h.hora_salida.strftime('%I:%M %p') if h.hora_salida else ''
             }
             for h in proximos_checkins_qs
         ]
@@ -93,8 +287,11 @@ def get_huespedes_context():
                 'ruc': h.numero_ruc or '',
                 'habitacion': h.numero_habitacion,
                 'check_in': fmt(h.check_in),
+                'hora_entrada': h.hora_entrada.strftime('%I:%M %p') if h.hora_entrada else '',
                 'check_out': fmt(h.check_out),
-                'total_estadia': total
+                'hora_salida': h.hora_salida.strftime('%I:%M %p') if h.hora_salida else '',
+                'total_estadia': total,
+                'is_day_use': h.is_day_use
             })
         return {
             'fecha_actual': now.strftime('%Y-%m-%d'),
@@ -114,8 +311,8 @@ def get_huespedes_context():
         }
     except Exception as e:
         import traceback
-        print(f"Error en get_huespedes_context: {e}")
-        print(traceback.format_exc())
+        safe_print(f"Error en get_huespedes_context: {e}")
+        safe_print(traceback.format_exc())
         return {'error': str(e), 'fecha_actual': timezone.localtime().strftime('%Y-%m-%d')}
 
 
@@ -162,16 +359,16 @@ def build_fallback_response(message_text, data):
                 return f"Distribución por canal: {canal_str}."
             return "Sin datos por canal."
 
-        # Resumen general si no coincide nada específico
+        # Resumen general si no coincide nada especifico
         seccion_actuales = (
-            "Huéspedes actuales:\n" +
-            ("\n".join([f"- {h.get('nombre','')} Hab {h.get('habitacion','')} - Sale: {h.get('check_out','')}" for h in huespedes_actuales[:5]])
-             if huespedes_actuales else "Sin huéspedes actualmente")
+            "Huespedes actuales:\n" +
+            ("\n".join([f"- {h.get('nombre','')} Hab {h.get('habitacion','')} - Entrada: {h.get('check_in','')}{' ' + h.get('hora_entrada','') if h.get('hora_entrada') else ''} - Sale: {h.get('check_out','')}{' ' + h.get('hora_salida','') if h.get('hora_salida') else ''}" for h in huespedes_actuales[:5]])
+             if huespedes_actuales else "Sin huespedes actualmente")
         )
         seccion_proximos = (
-            "Próximos check-ins:\n" +
-            ("\n".join([f"- {h.get('nombre','')} Hab {h.get('habitacion','')} - {h.get('check_in','')} al {h.get('check_out','')}" for h in proximos_checkins[:5]])
-             if proximos_checkins else "Sin próximos check-ins")
+            "Proximos check-ins:\n" +
+            ("\n".join([f"- {h.get('nombre','')} Hab {h.get('habitacion','')} - {h.get('check_in','')}{' ' + h.get('hora_entrada','') if h.get('hora_entrada') else ''} al {h.get('check_out','')}{' ' + h.get('hora_salida','') if h.get('hora_salida') else ''}" for h in proximos_checkins[:5]])
+             if proximos_checkins else "Sin proximos check-ins")
         )
         canal_str = ', '.join([f"{i.get('canal_venta','')}: {i.get('count',0)}" for i in por_canal]) if por_canal else 'Sin datos'
         tipo_str = ', '.join([f"{i.get('tipo_habitacion','')}: {i.get('count',0)}" for i in por_tipo_habitacion]) if por_tipo_habitacion else 'Sin datos'
@@ -237,6 +434,21 @@ def process_message(request):
                 content=message_text
             )
             
+            # Verificar si es una consulta de DNI, CE o RUC
+            documento_response = detectar_y_consultar_documento(message_text)
+            if documento_response:
+                # Es una consulta de documento, responder directamente
+                assistant_message = ChatbotMessage.objects.create(
+                    session=session,
+                    role='assistant',
+                    content=documento_response
+                )
+                return Response({
+                    'message': documento_response,
+                    'timestamp': assistant_message.timestamp.isoformat(),
+                    'session_id': session_id
+                })
+            
             # Obtener historial de mensajes (excluyendo el mensaje actual del usuario)
             # IMPORTANTE: hacer exclude ANTES del slice
             previous_messages = ChatbotMessage.objects.filter(
@@ -250,22 +462,22 @@ def process_message(request):
             
             # Formatear datos para el prompt
             huespedes = dashboard_data.get('huespedes_actuales', [])
-            huespedes_str = '\n'.join([f"  - {h['nombre']} - Hab {h['habitacion']} - Sale: {h['check_out']}" for h in huespedes[:5]]) if huespedes else '  Sin huéspedes actualmente'
+            huespedes_str = '\n'.join([f"  - {h['nombre']} - Hab {h['habitacion']} - Entrada: {h['check_in']}{' ' + h['hora_entrada'] if h.get('hora_entrada') else ''} - Sale: {h['check_out']}{' ' + h['hora_salida'] if h.get('hora_salida') else ''}" for h in huespedes[:5]]) if huespedes else '  Sin huéspedes actualmente'
             proximos = dashboard_data.get('proximos_checkins', [])
-            proximos_str = '\n'.join([f"  - {h['nombre']} - Hab {h['habitacion']} - {h['check_in']} al {h['check_out']}" for h in proximos[:5]]) if proximos else '  Sin próximos check-ins'
+            proximos_str = '\n'.join([f"  - {h['nombre']} - Hab {h['habitacion']} - {h['check_in']}{' ' + h['hora_entrada'] if h.get('hora_entrada') else ''} al {h['check_out']}{' ' + h['hora_salida'] if h.get('hora_salida') else ''}" for h in proximos[:5]]) if proximos else '  Sin próximos check-ins'
             recientes = dashboard_data.get('recientes', [])
-            recientes_str = '\n'.join([f"  - {r['nombre']} ({r['documento']}) - Hab {r['habitacion']} - Total: S/ {r['total_estadia']:,.2f}" for r in recientes]) if recientes else '  Sin datos recientes'
+            recientes_str = '\n'.join([f"  - {r['nombre']} ({r['documento']}) - Hab {r['habitacion']} - {r['check_in']}{' ' + r['hora_entrada'] if r.get('hora_entrada') else ''} al {r['check_out']}{' ' + r['hora_salida'] if r.get('hora_salida') else ''}{' [DAY USE]' if r.get('is_day_use') else ''} - Total: S/ {r['total_estadia']:,.2f}" for r in recientes]) if recientes else '  Sin datos recientes'
             por_canal = dashboard_data.get('por_canal', [])
             por_canal_str = ', '.join([f"{i['canal_venta']}: {i['count']}" for i in por_canal]) if por_canal else 'Sin datos'
             por_tipo = dashboard_data.get('por_tipo_habitacion', [])
             por_tipo_str = ', '.join([f"{i['tipo_habitacion']}: {i['count']}" for i in por_tipo]) if por_tipo else 'Sin datos'
             top_nac = dashboard_data.get('top_nacionalidades', [])
             top_nac_str = ', '.join([f"{i['nacionalidad']}: {i['count']}" for i in top_nac]) if top_nac else 'Sin datos'
-            system_prompt = f"""Eres un asistente del Hotel Plaza Trujillo especializado en información de PASAJEROS.
+            system_prompt = f"""Eres un asistente del Hotel Plaza Trujillo especializado en informacion de PASAJEROS.
 
-📅 Fecha y hora: {dashboard_data.get('fecha_actual', 'N/A')} {dashboard_data.get('hora_actual', 'N/A')}
+[FECHA Y HORA] {dashboard_data.get('fecha_actual', 'N/A')} {dashboard_data.get('hora_actual', 'N/A')}
 
-📊 Resumen de pasajeros:
+[RESUMEN DE PASAJEROS]
 - Total de registros: {dashboard_data.get('total_registros', 0)}
 - Registros del mes: {dashboard_data.get('registros_mes', 0)}
 - Check-ins hoy: {dashboard_data.get('checkins_hoy', 0)}
@@ -273,28 +485,30 @@ def process_message(request):
 - Ingresos hoy: S/ {dashboard_data.get('ingresos_hoy', 0):,.2f}
 - Ingresos del mes: S/ {dashboard_data.get('ingresos_mes', 0):,.2f}
 
-👥 Huéspedes actuales:
+[HUESPEDES ACTUALES]
 {huespedes_str}
 
-🗓️ Próximos check-ins:
+[PROXIMOS CHECK-INS]
 {proximos_str}
 
-🧾 Pasajeros recientes:
+[PASAJEROS RECIENTES]
 {recientes_str}
 
-🔎 Distribución:
+[DISTRIBUCION]
 - Por canal: {por_canal_str}
-- Por tipo de habitación: {por_tipo_str}
+- Por tipo de habitacion: {por_tipo_str}
 - Top nacionalidades: {top_nac_str}
 
             Instrucciones:
             - Responde SOLO sobre lo que el usuario pregunta.
-            - No menciones canales de venta (incluido WhatsApp) ni su ausencia a menos que el usuario lo solicite explícitamente.
-            - Si faltan datos, indícalo únicamente respecto al tema preguntado (no generalices ni agregues temas no solicitados).
+            - No menciones canales de venta (incluido WhatsApp) ni su ausencia a menos que el usuario lo solicite explicitamente.
+            - Si faltan datos, indicalo unicamente respecto al tema preguntado (no generalices ni agregues temas no solicitados).
             - Usa los datos anteriores para responder de forma precisa.
             - Formatea montos como S/ 1,234.56.
-            - Responde en español y con claridad.
-            - Si no hay datos suficientes sobre el tema preguntado, indícalo explícitamente sin añadir información irrelevante."""
+            - Responde en espanol y con claridad.
+            - Si no hay datos suficientes sobre el tema preguntado, indicalo explicitamente sin anadir informacion irrelevante.
+            - Puedes indicar al usuario que puede consultar informacion de DNI (8 digitos), RUC (11 digitos) o Carne de Extranjeria (CE) escribiendo por ejemplo: "DNI 12345678" o "RUC 12345678901".
+            - Si el usuario pregunta como consultar un documento, indicale que puede escribir "DNI" seguido del numero, "RUC" seguido del numero, o "CE" seguido del numero."""
             
             # Construir historial para Gemini
             history = []
@@ -326,12 +540,12 @@ def process_message(request):
                 try:
                     model = genai.GenerativeModel(model_name_attempt)
                     model_name = model_name_attempt
-                    print(f"✅ Modelo '{model_name}' inicializado correctamente")
+                    safe_print(f"[OK] Modelo '{model_name}' inicializado correctamente")
                     break
                 except Exception as e:
                     error_msg = str(e)
                     model_errors.append(f"{model_name_attempt}: {error_msg}")
-                    print(f"⚠️  Modelo '{model_name_attempt}' no disponible: {error_msg}")
+                    safe_print(f"[WARN] Modelo '{model_name_attempt}' no disponible: {error_msg}")
                     continue
             
             if model is None:
@@ -361,7 +575,7 @@ def process_message(request):
                         response = chat.send_message(full_message)
                     except Exception as chat_error:
                         # Si falla con historial, intentar sin historial
-                        print(f"Error con historial, intentando sin historial: {chat_error}")
+                        safe_print(f"Error con historial, intentando sin historial: {chat_error}")
                         response = model.generate_content(full_message)
                 else:
                     # Primera interacción, generar contenido directamente
@@ -397,7 +611,7 @@ def process_message(request):
                     else:
                         assistant_response = str(response)
                 except Exception as extract_error:
-                    print(f"Error al extraer texto de respuesta: {extract_error}")
+                    safe_print(f"Error al extraer texto de respuesta: {extract_error}")
                     return Response({
                         'error': f'Error al procesar respuesta: {str(extract_error)}',
                         'message': 'Error al procesar la respuesta del asistente. Por favor, inténtalo de nuevo.'
@@ -425,8 +639,8 @@ def process_message(request):
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
-        print(f"Error en chatbot: {str(e)}")
-        print(f"Traceback: {error_trace}")
+        safe_print(f"Error en chatbot: {str(e)}")
+        safe_print(f"Traceback: {error_trace}")
         return Response({
             'error': str(e),
             'message': 'Lo siento, ha ocurrido un error al procesar tu mensaje. Por favor, inténtalo de nuevo.'

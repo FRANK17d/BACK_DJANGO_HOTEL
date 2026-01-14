@@ -206,10 +206,10 @@ DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=EMAIL_HOST_USER or 'no
 # Usar SMTP si hay credenciales configuradas, sino usar consola (solo para desarrollo)
 if EMAIL_HOST_USER and EMAIL_HOST_PASSWORD and EMAIL_HOST != 'localhost':
     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-    print(f"✅ Email configurado: SMTP en {EMAIL_HOST}:{EMAIL_PORT} desde {DEFAULT_FROM_EMAIL}")
+    print(f"[OK] Email configurado: SMTP en {EMAIL_HOST}:{EMAIL_PORT} desde {DEFAULT_FROM_EMAIL}")
 else:
     EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-    print("⚠️ Email en modo consola (solo desarrollo). Configura EMAIL_HOST, EMAIL_HOST_USER y EMAIL_HOST_PASSWORD para enviar correos reales.")
+    print("[AVISO] Email en modo consola (solo desarrollo). Configura EMAIL_HOST, EMAIL_HOST_USER y EMAIL_HOST_PASSWORD para enviar correos reales.")
 
 # Lookup API Token
 LOOKUP_API_TOKEN = config('LOOKUP_API_TOKEN', default='dummy-token')
